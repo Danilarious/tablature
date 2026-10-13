@@ -11,7 +11,8 @@
     "lint": "next lint",
     "db:seed": "tsx app/db/seed.ts",
     "backup": "tsx scripts/backup.ts",
-    "restore": "tsx scripts/restore.ts"
+    "restore": "tsx scripts/restore.ts",
+    "media:orphans": "tsx scripts/media-orphans.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",

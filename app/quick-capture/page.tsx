@@ -1,13 +1,42 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import FretboardEditor from '@/app/components/FretboardEditor';
 import TabGrid, { TabColumn } from '@/app/components/TabGrid';
-import AudioRecorder from '@/app/components/AudioRecorder';
-import { Zap, Check, AlertCircle, Save, Plus, ArrowRight, Guitar, Radio } from 'lucide-react';
+import AudioRecorder, { CapturedMedia } from '@/app/components/AudioRecorder';
+import { Check, AlertCircle, Save, Guitar, Radio, RotateCcw, Trash2 } from 'lucide-react';
 import Link from 'next/link';
-import { fetchJson } from '@/app/lib/api/client';
+import { fetchJson, uploadAttachmentFile } from '@/app/lib/api/client';
 import { buildCapoFrets, CapoMode, pickCompatibleTuningId, tabHasNotes } from '@/app/lib/music/compatibility';
+import {
+  clearDraft,
+  draftHasContent,
+  loadDraft,
+  QuickCaptureDraft,
+  resolveDraftRestore,
+  saveDraft,
+} from '@/app/lib/drafts/quick-capture-draft';
+import { hasUnuploadedMedia, PendingMediaItem, uploadPendingMedia } from '@/app/lib/media/pending-media';
+
+const EMPTY_COLUMNS = (): TabColumn[] => [
+  { id: 'c1', notes: [] },
+  { id: 'c2', notes: [] },
+  { id: 'c3', notes: [] },
+  { id: 'c4', notes: [] },
+];
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+interface SavedCapture {
+  motif: { id: string; humanId: string; name: string };
+  setupReused: boolean;
+}
 
 function safePitchArray(raw: unknown): string[] {
   try {
@@ -30,7 +59,7 @@ export default function QuickCapturePage() {
   // Capo selection (canonical per-string frets; index 0 = bass-side string)
   const [capoType, setCapoType] = useState<CapoMode>('none');
   const [fullCapoFret, setFullCapoFret] = useState<number>(2);
-  const [customCapoFrets] = useState<(number | null)[]>([]);
+  const [customCapoFrets, setCustomCapoFrets] = useState<(number | null)[]>([]);
 
   // Motif / Idea details
   const [motifName, setMotifName] = useState<string>('');
@@ -39,18 +68,23 @@ export default function QuickCapturePage() {
   const [motifNotes, setMotifNotes] = useState<string>('');
 
   // Tab & Fretboard state
-  const [tabColumns, setTabColumns] = useState<TabColumn[]>([
-    { id: 'c1', notes: [] },
-    { id: 'c2', notes: [] },
-    { id: 'c3', notes: [] },
-    { id: 'c4', notes: [] },
-  ]);
+  const [tabColumns, setTabColumns] = useState<TabColumn[]>(EMPTY_COLUMNS);
   const [activeColumnIndex, setActiveColumnIndex] = useState<number>(0);
 
   // Saved result feedback
-  const [savedMotif, setSavedMotif] = useState<any | null>(null);
+  const [savedCapture, setSavedCapture] = useState<SavedCapture | null>(null);
+  const savedMotif = savedCapture?.motif ?? null;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Media recorded/selected before the motif exists; uploaded only against the real motif ID.
+  const [pendingMedia, setPendingMedia] = useState<PendingMediaItem[]>([]);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+
+  // Draft recovery (localStorage). Autosave starts only after the initial restore attempt.
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [draftNotice, setDraftNotice] = useState<{ savedAt: number; warnings: string[] } | null>(null);
+  const lastPersistedDraft = useRef<string | null>(null);
 
   // Initial load
   useEffect(() => {
@@ -68,9 +102,32 @@ export default function QuickCapturePage() {
           setSelectedInstrumentId(instData[0].id);
           setSelectedTuningId(pickCompatibleTuningId(tunData, instData[0].stringCount, null));
         }
-      } catch (err: any) {
-        setError(`Failed to load initial data: ${err?.message ?? 'unknown error'}`);
+
+        // Restore an unsaved draft, mapped onto instruments/tunings that exist now.
+        const draft = loadDraft(browserStorage());
+        const plan = draft ? resolveDraftRestore(draft, instData, tunData) : null;
+        if (draft && plan) {
+          setSelectedInstrumentId(plan.instrumentId);
+          setSelectedTuningId(plan.tuningId);
+          setCapoType(draft.capoMode === 'custom' && plan.customCapoFrets.length === 0 ? 'none' : draft.capoMode);
+          setFullCapoFret(draft.capoFret);
+          setCustomCapoFrets(plan.customCapoFrets);
+          if (plan.tabColumns && plan.tabColumns.length > 0) {
+            setTabColumns(plan.tabColumns as TabColumn[]);
+            setActiveColumnIndex(Math.min(draft.activeColumnIndex, plan.tabColumns.length - 1));
+          }
+          setMotifName(draft.title);
+          setMotifFunction(draft.motifFunction);
+          setMotifTags(draft.tags);
+          setMotifNotes(draft.notes);
+          setDraftNotice({ savedAt: draft.savedAt, warnings: plan.warnings });
+          // If anything could not be restored, leave the stored draft untouched until the user acts.
+          lastPersistedDraft.current = plan.warnings.length > 0 ? 'locked' : null;
+        }
+      } catch (err) {
+        setError(`Failed to load initial data: ${err instanceof Error ? err.message : 'unknown error'}`);
       } finally {
+        setDraftHydrated(true);
         setLoading(false);
       }
     }
@@ -101,6 +158,76 @@ export default function QuickCapturePage() {
   // Calculate effective capo frets array
   const effectiveCapoFrets: (number | null)[] = buildCapoFrets(capoType, stringCount, fullCapoFret, customCapoFrets);
 
+  const currentDraft: QuickCaptureDraft = {
+    version: 1,
+    savedAt: 0,
+    instrumentId: selectedInstrumentId,
+    tuningId: currentTuning?.id ?? '',
+    capoMode: capoType,
+    capoFret: fullCapoFret,
+    customCapoFrets,
+    tabColumns,
+    activeColumnIndex,
+    title: motifName,
+    motifFunction,
+    tags: motifTags,
+    notes: motifNotes,
+  };
+  const draftKey = JSON.stringify({ ...currentDraft, savedAt: 0 });
+  const hasUnsavedDraft = !savedCapture && draftHasContent(currentDraft);
+
+  // Debounced autosave of the unsaved draft. Never clears; only save/discard clear it.
+  useEffect(() => {
+    if (!draftHydrated || savedCapture) return;
+    if (lastPersistedDraft.current === 'locked') {
+      // A partially-restorable draft stays untouched until the user edits something.
+      lastPersistedDraft.current = draftKey;
+      return;
+    }
+    if (lastPersistedDraft.current === draftKey) return;
+    const handle = window.setTimeout(() => {
+      if (saveDraft(browserStorage(), { ...(JSON.parse(draftKey) as QuickCaptureDraft), savedAt: Date.now() })) {
+        lastPersistedDraft.current = draftKey;
+      }
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [draftKey, draftHydrated, savedCapture]);
+
+  // Warn before leaving with unsaved work or media that has not reached the server.
+  const needsLeaveWarning = hasUnsavedDraft || hasUnuploadedMedia(pendingMedia);
+  useEffect(() => {
+    if (!needsLeaveWarning) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [needsLeaveWarning]);
+
+  const handleCapturedMedia = (media: CapturedMedia) => {
+    setPendingMedia((prev) => [
+      ...prev,
+      { localId: `pm-${Date.now()}-${prev.length}`, blob: media.blob, filename: media.filename, description: media.description, status: 'pending' },
+    ]);
+  };
+
+  const uploadMediaFor = async (motifId: string, items: PendingMediaItem[]) => {
+    if (items.length === 0) return;
+    setUploadingMedia(true);
+    try {
+      const result = await uploadPendingMedia(
+        items,
+        { parentType: 'motif', parentId: motifId },
+        (item, target) => uploadAttachmentFile(item.blob, item.filename, target.parentType, target.parentId, item.description),
+        setPendingMedia
+      );
+      setPendingMedia(result);
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
   // Synchronized click on fretboard: toggles note in active TAB column
   const handleFretboardNoteClick = (strIdx: number, fret: number) => {
     const activeCol = tabColumns[activeColumnIndex];
@@ -128,6 +255,7 @@ export default function QuickCapturePage() {
   };
 
   const handleSaveCapture = async () => {
+    if (savedCapture) return; // already saved; use "Capture Next Idea" to start another
     if (!selectedInstrumentId || !currentTuning) {
       setError(`Please select an instrument and a ${stringCount}-string tuning.`);
       return;
@@ -136,72 +264,74 @@ export default function QuickCapturePage() {
     setSaving(true);
     setError(null);
 
+    let saved: SavedCapture;
     try {
-      // 1. Create Capo record if capo is active
-      let capoConfigId = null;
-      if (capoType !== 'none') {
-        const capoData = await fetchJson<{ id: string }>('/api/capos', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: capoType === 'full' ? `Full Capo Fret ${fullCapoFret}` : 'Partial Capo',
-            type: capoType === 'full' ? 'full' : 'partial',
-            stringFrets: effectiveCapoFrets,
-          }),
-        });
-        capoConfigId = capoData.id;
-      }
-
-      // 2. Create physical Setup snapshot
-      const setupData = await fetchJson<{ id: string }>('/api/setups', {
+      // One server-side SQLite transaction creates/reuses the capo + setup and inserts the motif.
+      const tagArray = motifTags.split(',').map((t) => t.trim()).filter(Boolean);
+      saved = await fetchJson<SavedCapture>('/api/quick-capture', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           instrumentId: selectedInstrumentId,
           tuningId: currentTuning.id,
-          capoConfigId,
-          name: `${currentInstrument?.name} in ${currentTuning?.name} (${capoType !== 'none' ? 'Capo' : 'Open'})`,
+          capoFrets: capoType === 'none' ? null : effectiveCapoFrets,
+          motif: {
+            name: motifName.trim() || 'Untitled Quick Capture Idea',
+            function: motifFunction,
+            tabData: tabColumns,
+            tags: tagArray.length > 0 ? tagArray : ['Quick Capture', 'Inbox'],
+            notes: motifNotes.trim() || 'Captured via Quick Capture mobile/desktop interface.',
+          },
         }),
       });
-
-      // 3. Create Motif record
-      const tagArray = motifTags.split(',').map(t => t.trim()).filter(Boolean);
-      const motifData = await fetchJson<any>('/api/motifs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: motifName.trim() || 'Untitled Quick Capture Idea',
-          setupId: setupData.id,
-          tuningId: currentTuning.id,
-          instrumentId: selectedInstrumentId,
-          function: motifFunction,
-          tabData: tabColumns,
-          tags: tagArray.length > 0 ? tagArray : ['Quick Capture', 'Inbox'],
-          notes: motifNotes.trim() || 'Captured via Quick Capture mobile/desktop interface.',
-        }),
-      });
-
-      setSavedMotif(motifData);
-    } catch (err: any) {
-      setError(`Save failed: ${err.message}`);
-    } finally {
+    } catch (err) {
+      // Nothing was written; the draft and any pending media are kept.
+      setError(`Save failed — nothing was saved and your draft is kept: ${err instanceof Error ? err.message : 'unknown error'}`);
       setSaving(false);
+      return;
     }
+
+    setSavedCapture(saved);
+    clearDraft(browserStorage());
+    lastPersistedDraft.current = null;
+    setDraftNotice(null);
+    setSaving(false);
+    await uploadMediaFor(saved.motif.id, pendingMedia);
   };
 
-  const handleStartNewCapture = () => {
-    setSavedMotif(null);
+  const handleRetryMedia = async () => {
+    if (!savedMotif) return;
+    await uploadMediaFor(savedMotif.id, pendingMedia);
+  };
+
+  const handleDiscardDraft = () => {
+    if (!window.confirm('Discard this unsaved Quick Capture draft (TAB, title, tags, notes and kept recordings)?')) return;
+    clearDraft(browserStorage());
+    lastPersistedDraft.current = null;
+    setDraftNotice(null);
+    resetCaptureFields();
+    setPendingMedia([]);
+  };
+
+  const resetCaptureFields = () => {
     setMotifName('');
     setMotifNotes('');
     setMotifTags('');
-    setTabColumns([
-      { id: 'c1', notes: [] },
-      { id: 'c2', notes: [] },
-      { id: 'c3', notes: [] },
-      { id: 'c4', notes: [] },
-    ]);
+    setTabColumns(EMPTY_COLUMNS());
     setActiveColumnIndex(0);
   };
+
+  const handleStartNewCapture = () => {
+    if (hasUnuploadedMedia(pendingMedia)) {
+      const ok = window.confirm('Some media has not been attached to the saved idea yet. Starting a new capture will drop it. Continue?');
+      if (!ok) return;
+    }
+    setSavedCapture(null);
+    setPendingMedia([]);
+    resetCaptureFields();
+  };
+
+  const failedMedia = pendingMedia.filter((m) => m.status === 'failed');
 
   if (loading) {
     return (
@@ -231,7 +361,7 @@ export default function QuickCapturePage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={saving}
+            disabled={saving || !!savedCapture}
             onClick={handleSaveCapture}
             className="flex items-center gap-2 px-4 py-2 bg-stone-900 text-stone-50 font-mono text-xs font-bold rounded shadow hover:bg-stone-800 disabled:opacity-50 transition-all"
           >
@@ -240,6 +370,29 @@ export default function QuickCapturePage() {
           </button>
         </div>
       </div>
+
+      {/* Restored draft banner */}
+      {draftNotice && !savedCapture && (
+        <div className="p-3 bg-amber-50 border border-amber-300 rounded flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs font-mono text-amber-900">
+          <div className="flex items-start gap-2">
+            <RotateCcw className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+            <div>
+              <div>Restored unsaved draft from {new Date(draftNotice.savedAt).toLocaleString()}.</div>
+              {draftNotice.warnings.map((w) => (
+                <div key={w} className="text-amber-800">{w}</div>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleDiscardDraft}
+            className="flex items-center gap-1 px-2.5 py-1 border border-amber-400 bg-white rounded hover:bg-amber-100"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Discard draft
+          </button>
+        </div>
+      )}
 
       {/* Success Notification Banner */}
       {savedMotif && (
@@ -265,6 +418,45 @@ export default function QuickCapturePage() {
               Capture Next Idea
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Pending / failed media status (motif is already saved when uploads run) */}
+      {pendingMedia.length > 0 && (
+        <div className="p-3 bg-paper-100 border border-stone-300 rounded text-xs font-mono text-stone-800 space-y-1.5">
+          <div className="font-bold tracking-wider uppercase text-stone-900">
+            {savedMotif ? 'Media for ' + savedMotif.humanId : 'Media kept — attached when the idea is saved'}
+          </div>
+          {pendingMedia.map((m) => (
+            <div key={m.localId} className="flex items-center justify-between gap-2">
+              <span className="truncate">{m.filename}</span>
+              <span className={m.status === 'failed' ? 'text-red-700' : m.status === 'uploaded' ? 'text-emerald-700' : 'text-stone-500'}>
+                {m.status === 'failed' ? `failed: ${m.error ?? 'unknown error'}` : m.status}
+              </span>
+              {!savedMotif && (
+                <button
+                  type="button"
+                  onClick={() => setPendingMedia((prev) => prev.filter((p) => p.localId !== m.localId))}
+                  className="text-stone-500 hover:text-stone-900"
+                >
+                  remove
+                </button>
+              )}
+            </div>
+          ))}
+          {savedMotif && failedMedia.length > 0 && (
+            <div className="flex items-center justify-between gap-2 pt-1 text-red-800">
+              <span>The idea is saved, but {failedMedia.length} file(s) could not be attached. They are still held here.</span>
+              <button
+                type="button"
+                disabled={uploadingMedia}
+                onClick={handleRetryMedia}
+                className="px-2.5 py-1 bg-stone-900 text-white rounded font-bold hover:bg-stone-800 disabled:opacity-50"
+              >
+                {uploadingMedia ? 'RETRYING...' : 'RETRY'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -449,11 +641,13 @@ export default function QuickCapturePage() {
 
         {/* Browser Audio Recording Memo */}
         <div>
-          <AudioRecorder
-            parentType="motif"
-            parentId={savedMotif?.id || 'temp-quick-capture'}
-            onUploaded={() => {}}
-          />
+          {savedMotif ? (
+            // After saving, new recordings attach directly to the real motif.
+            <AudioRecorder parentType="motif" parentId={savedMotif.id} />
+          ) : (
+            // Before saving, recordings stay pending in the browser until the motif exists.
+            <AudioRecorder parentType="motif" onCapture={handleCapturedMedia} />
+          )}
         </div>
       </div>
     </div>

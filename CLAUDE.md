@@ -34,6 +34,17 @@ Drizzle ORM + better-sqlite3 + Tailwind. **Treat every change as brownfield data
 - Tension uses the **open (uncapoed) pitch at full physical scale length**. A capo changes
   sounding pitch, not tension. Effective vibrating length = `L / 2^(capoFret/12)`.
 
+## Write paths
+- Multi-record writes go through services in `app/lib/services/` inside one
+  `db.transaction(...)` (e.g. `createQuickCapture`: capo → setup → motif, all-or-nothing).
+- Attachments: `saveAttachment` validates parent type/existence, extension/MIME and size,
+  streams to `media/.incoming-*`, renames, inserts, and unlinks the file if the insert fails.
+  Never attach to a temporary parent ID; pending browser media is uploaded only after the
+  real record exists (`app/lib/media/pending-media.ts`). Deleting moves files to `media/.trash/`.
+- `npm run media:orphans` is a read-only report (`--move-to-trash` moves aside, never deletes).
+- Quick Capture drafts live in `localStorage` (`bxb.quickCapture.draft.v1`); cleared only on
+  successful save or explicit discard.
+
 ## Commands
 - `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`
 - Tests/builds/previews must not touch the real DB: set `MUSIC_NOTEBOOK_DATA_DIR` to a temp

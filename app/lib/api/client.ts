@@ -39,3 +39,19 @@ export async function fetchJson<T>(input: string, init?: RequestInit): Promise<T
   if (!res.ok) throw new ApiRequestError(res.status, describeApiError(body, res.status));
   return body as T;
 }
+
+/** Uploads a file/blob as an attachment of an existing (saved) record. */
+export async function uploadAttachmentFile(
+  blob: Blob,
+  filename: string,
+  parentType: string,
+  parentId: string,
+  description?: string
+): Promise<{ id: string; filePath: string; displayName: string }> {
+  const form = new FormData();
+  form.append('file', blob, filename);
+  form.append('parentType', parentType);
+  form.append('parentId', parentId);
+  if (description) form.append('description', description);
+  return fetchJson('/api/attachments', { method: 'POST', body: form });
+}
