@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  music-notebook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bxb-music-notebook
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - MUSIC_NOTEBOOK_DATA_DIR=/data
+    volumes:
+      - ./storage:/data

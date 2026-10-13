@@ -1,0 +1,16 @@
+{
+  "id": "example-motif-cascading",
+  "humanId": "M-EX-001",
+  "name": "Cascading Open-D Arpeggio",
+  "function": "ostinato",
+  "tabData": [
+    { "id": "step-1", "notes": [{ "stringIndex": 5, "fret": 0 }], "duration": "quarter" },
+    { "id": "step-2", "notes": [{ "stringIndex": 4, "fret": 0 }], "duration": "eighth" },
+    { "id": "step-3", "notes": [{ "stringIndex": 3, "fret": 0 }], "duration": "eighth" },
+    { "id": "step-4", "notes": [{ "stringIndex": 2, "fret": 0 }], "duration": "eighth" },
+    { "id": "step-5", "notes": [{ "stringIndex": 1, "fret": 0 }], "duration": "eighth" },
+    { "id": "step-6", "notes": [{ "stringIndex": 0, "fret": 0 }], "duration": "quarter" }
+  ],
+  "tags": ["fingerstyle", "open_strings", "arpeggio"],
+  "notes": "Demonstration arpeggio pattern in Open D."
+}

@@ -1,0 +1,58 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build and Compilation outputs
+.next/
+dist/
+build/
+out/
+coverage/
+
+# Logs & Runtime telemetry
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.system_generated/
+
+# OS and IDE files
+.DS_Store
+.idea/
+.vscode/
+*.pem
+
+# Private Local Storage & Runtime Data
+# Note: Directory structure is preserved via .gitkeep
+storage/database/*
+!storage/database/.gitkeep
+storage/media/*
+!storage/media/.gitkeep
+storage/backups/*
+!storage/backups/.gitkeep
+imports/*
+!imports/.gitkeep
+exports/*
+!exports/.gitkeep
+
+# SQLite database & journal files anywhere
+*.db
+*.db-wal
+*.db-shm
+*.bak
+
+# Large Design Binaries, Audio & Video (Kept locally; exclude from git without LFS)
+*.ai
+*.psd
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.mov
+*.mp4

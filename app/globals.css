@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #fcfbf9;
+    color: #1a1917;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+}
+
+/* Custom Print Rules matching US Letter Production Brief */
+@media print {
+  @page {
+    size: 8.5in 11in portrait;
+    margin: 0.5in;
+  }
+
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-page {
+    page-break-after: always;
+    break-after: page;
+  }
+
+  /* Thin technical rules for print masters */
+  .technical-rule {
+    border-color: #000000 !important;
+    border-width: 0.5pt !important;
+  }
+}
+
+@media screen {
+  .print-only {
+    display: none !important;
+  }
+}

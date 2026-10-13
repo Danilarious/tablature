@@ -1,0 +1,26 @@
+{
+  "id": "example-comp-echoes",
+  "humanId": "C-EX-001",
+  "title": "Echoes in Open D",
+  "status": "idea",
+  "tonalCenter": "D",
+  "tempo": 96,
+  "tempoNotes": "Moderato, gentle rubato",
+  "pieceMap": "Intro -> Verse A -> Interlude -> Outro",
+  "sections": [
+    {
+      "id": "sec-1",
+      "name": "Intro",
+      "notes": "Cascading harmonics and open string swells.",
+      "tabData": []
+    },
+    {
+      "id": "sec-2",
+      "name": "Verse A",
+      "notes": "Main fingerpicking melody.",
+      "tabData": []
+    }
+  ],
+  "notes": "Fictional example structure for demonstration and testing purposes.",
+  "lyrics": null
+}
