@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { calculateSoundingPitch } from '@/app/lib/music/pitch';
+import { getStandardTabRows, neckFretFromTabFret, tabFretFromNeckFret } from '@/app/lib/music/string-order';
 
 export interface FretboardEditorProps {
   stringCount: number; // 5, 6, 7
@@ -25,12 +26,11 @@ export default function FretboardEditor({
   // Defensive validation: ensure string count matches pitches length
   const safePitches = pitches.length >= stringCount
     ? pitches.slice(0, stringCount)
-    : [...pitches, ...Array(stringCount - pitches.length).fill('E2')];
+    : [...pitches, ...Array(stringCount - pitches.length).fill('?')];
 
-  // We display highest string (String 1) at the top, lowest string (String N) at the bottom, matching standard guitar tablature convention
-  // In our arrays, string 0 is typically lowest string or string 0 is index.
-  // Standard representation: index stringCount-1 down to 0
-  const stringIndices = Array.from({ length: stringCount }, (_, i) => i).reverse();
+  // Canonical order: index 0 = bass-side string. Display treble-side string (String 1) on top,
+  // using the same row helper as TabGrid so a click and a TAB cell share one canonical index.
+  const rows = getStandardTabRows(stringCount, safePitches);
 
   return (
     <div className="w-full bg-paper-100 border border-stone-300 rounded overflow-hidden select-none">
@@ -65,21 +65,22 @@ export default function FretboardEditor({
 
           {/* Strings and Frets Grid */}
           <div className="relative py-2 space-y-3">
-            {stringIndices.map((strIdx, displayRow) => {
+            {rows.map(({ index: strIdx, stringNumber }, displayRow) => {
               const openPitch = safePitches[strIdx] || 'E2';
               const capoFret = capoFrets[strIdx] ?? null;
               const openSounding = calculateSoundingPitch(openPitch, capoFret, 0);
 
-              // Find active note on this string if any
+              // Find active note on this string if any (TAB frets are capo-relative)
               const activeNote = activeNotes.find(n => n.stringIndex === strIdx);
-              const activeFret = activeNote ? (typeof activeNote.fret === 'number' ? activeNote.fret : parseInt(activeNote.fret as string, 10)) : null;
+              const activeFret = activeNote && typeof activeNote.fret === 'number' ? activeNote.fret : null;
+              const activeNeckFret = activeFret !== null ? neckFretFromTabFret(activeFret, capoFret) : null;
 
               return (
-                <div key={strIdx} className="flex items-center group/str">
+                <div key={strIdx} className="flex items-center group/str" data-row-string-index={strIdx}>
                   {/* String Label Box */}
                   <div className="w-20 pr-3 flex items-center justify-between font-mono text-xs">
                     <span className="text-stone-500 font-semibold">
-                      #{strIdx + 1}
+                      #{stringNumber}
                     </span>
                     <div className="flex flex-col items-end">
                       <span className="font-bold text-stone-900">{openPitch}</span>
@@ -101,7 +102,7 @@ export default function FretboardEditor({
                           ? 'bg-stone-900 text-stone-100 border-stone-900 font-bold shadow'
                           : 'bg-white text-stone-700 border-stone-300 hover:border-stone-800'
                       }`}
-                      title={`String ${strIdx + 1} Open: ${openSounding}`}
+                      title={`String ${stringNumber} ${capoFret && capoFret > 0 ? `at capo (TAB 0)` : 'open'}: ${openSounding}`}
                     >
                       0
                     </button>
@@ -118,9 +119,11 @@ export default function FretboardEditor({
                     />
 
                     {Array.from({ length: maxFret }, (_, i) => i + 1).map((fret) => {
-                      const sounding = calculateSoundingPitch(openPitch, capoFret, fret);
+                      // `fret` here is the PHYSICAL neck fret; sounding = open + neck fret.
+                      const sounding = calculateSoundingPitch(openPitch, 0, fret);
+                      const tabFret = tabFretFromNeckFret(fret, capoFret);
                       const isCapoHere = capoFret === fret;
-                      const isSelected = activeFret === fret;
+                      const isSelected = activeNeckFret !== null && activeFret !== 0 && activeNeckFret === fret;
 
                       return (
                         <div
@@ -131,23 +134,26 @@ export default function FretboardEditor({
                           {isCapoHere && (
                             <div
                               className="absolute inset-y-0 -left-1 w-2 bg-amber-600/30 border-l-2 border-amber-600 z-20 pointer-events-none"
-                              title={`Capo on String ${strIdx + 1} at Fret ${fret}`}
+                              title={`Capo on String ${stringNumber} at Fret ${fret}`}
                             />
                           )}
 
-                          {/* Interactive Note Button */}
+                          {/* Interactive Note Button (records capo-relative TAB fret) */}
+                          {tabFret !== null && (
                           <button
                             type="button"
-                            onClick={() => onNoteClick?.(strIdx, fret)}
+                            onClick={() => onNoteClick?.(strIdx, tabFret)}
                             className={`w-6 h-6 rounded-full flex items-center justify-center font-mono text-[10px] transition-all ${
                               isSelected
                                 ? 'bg-stone-950 text-stone-100 font-bold scale-110 shadow ring-2 ring-stone-900'
                                 : 'opacity-0 group-hover/fret:opacity-100 bg-stone-200 text-stone-900 hover:bg-stone-900 hover:text-white'
                             }`}
-                            title={`String ${strIdx + 1}, Fret ${fret} (${sounding})`}
+                            title={`String ${stringNumber}, neck fret ${fret}${tabFret !== fret ? ` = TAB ${tabFret} above capo` : ''} (${sounding})`}
+                            data-tab-fret={tabFret}
                           >
-                            {isSelected ? fret : fret}
+                            {tabFret}
                           </button>
+                          )}
 
                           {/* Sounding pitch tooltip on hover */}
                           <div className="absolute -top-5 hidden group-hover/fret:block bg-stone-900 text-stone-100 text-[9px] font-mono px-1 py-0.5 rounded pointer-events-none z-30">

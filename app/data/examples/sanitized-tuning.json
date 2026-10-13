@@ -3,7 +3,7 @@
   "humanId": "T-EX-001",
   "name": "Open D (D-A-D-F#-A-D)",
   "stringCount": 6,
-  "pitches": ["D4", "A3", "F#3", "D3", "A2", "D2"],
+  "pitches": ["D2", "A2", "D3", "F#3", "A3", "D4"],
   "tonalCenter": "D",
   "tags": ["open_tuning", "acoustic", "example"],
   "notes": "Demonstration Open D tuning for 6-string acoustic guitar."

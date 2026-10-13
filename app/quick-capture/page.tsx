@@ -6,6 +6,17 @@ import TabGrid, { TabColumn } from '@/app/components/TabGrid';
 import AudioRecorder from '@/app/components/AudioRecorder';
 import { Zap, Check, AlertCircle, Save, Plus, ArrowRight, Guitar, Radio } from 'lucide-react';
 import Link from 'next/link';
+import { fetchJson } from '@/app/lib/api/client';
+import { buildCapoFrets, CapoMode, pickCompatibleTuningId, tabHasNotes } from '@/app/lib/music/compatibility';
+
+function safePitchArray(raw: unknown): string[] {
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function QuickCapturePage() {
   const [instruments, setInstruments] = useState<any[]>([]);
@@ -16,10 +27,10 @@ export default function QuickCapturePage() {
   const [selectedInstrumentId, setSelectedInstrumentId] = useState<string>('');
   const [selectedTuningId, setSelectedTuningId] = useState<string>('');
 
-  // Capo selection: 'none' | 'full-2' | 'custom'
-  const [capoType, setCapoType] = useState<string>('none');
+  // Capo selection (canonical per-string frets; index 0 = bass-side string)
+  const [capoType, setCapoType] = useState<CapoMode>('none');
   const [fullCapoFret, setFullCapoFret] = useState<number>(2);
-  const [customCapoFrets, setCustomCapoFrets] = useState<(number | null)[]>([]);
+  const [customCapoFrets] = useState<(number | null)[]>([]);
 
   // Motif / Idea details
   const [motifName, setMotifName] = useState<string>('');
@@ -45,24 +56,20 @@ export default function QuickCapturePage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [instRes, tunRes] = await Promise.all([
-          fetch('/api/instruments'),
-          fetch('/api/tunings'),
+        const [instData, tunData] = await Promise.all([
+          fetchJson<any[]>('/api/instruments'),
+          fetchJson<any[]>('/api/tunings'),
         ]);
-        const instData = await instRes.json();
-        const tunData = await tunRes.json();
 
         setInstruments(instData);
         setTunings(tunData);
 
         if (instData.length > 0) {
           setSelectedInstrumentId(instData[0].id);
-        }
-        if (tunData.length > 0) {
-          setSelectedTuningId(tunData[0].id);
+          setSelectedTuningId(pickCompatibleTuningId(tunData, instData[0].stringCount, null));
         }
       } catch (err: any) {
-        setError('Failed to load initial data.');
+        setError(`Failed to load initial data: ${err?.message ?? 'unknown error'}`);
       } finally {
         setLoading(false);
       }
@@ -71,25 +78,28 @@ export default function QuickCapturePage() {
   }, []);
 
   const currentInstrument = instruments.find(i => i.id === selectedInstrumentId);
-  const currentTuning = tunings.find(t => t.id === selectedTuningId);
+  const stringCount: number = currentInstrument?.stringCount || 6;
+  // Only a tuning whose string count matches the instrument is ever treated as selected.
+  const currentTuning = tunings.find(t => t.id === selectedTuningId && t.stringCount === stringCount);
+  const tuningPitches = safePitchArray(currentTuning?.pitches);
+  const rawPitches = tuningPitches.length === stringCount ? tuningPitches : Array(stringCount).fill('?');
 
-  const stringCount = currentInstrument?.stringCount || currentTuning?.stringCount || 6;
-  const rawPitches = currentTuning?.pitches ? JSON.parse(currentTuning.pitches) : ['E2', 'A2', 'D3', 'G3', 'B3', 'E4'];
+  const handleInstrumentChange = (instrumentId: string) => {
+    const nextInst = instruments.find(i => i.id === instrumentId);
+    if (!nextInst) return;
+    if (nextInst.stringCount !== stringCount && tabHasNotes(tabColumns)) {
+      const ok = window.confirm(
+        `Switching to a ${nextInst.stringCount}-string instrument clears the TAB entered for ${stringCount} strings (string indexes would no longer refer to the same physical strings). Continue?`
+      );
+      if (!ok) return;
+      setTabColumns(tabColumns.map(c => ({ ...c, notes: [] })));
+    }
+    setSelectedInstrumentId(instrumentId);
+    setSelectedTuningId(pickCompatibleTuningId(tunings, nextInst.stringCount, selectedTuningId));
+  };
 
   // Calculate effective capo frets array
-  const effectiveCapoFrets: (number | null)[] = (() => {
-    if (capoType === 'none') {
-      return Array(stringCount).fill(null);
-    }
-    if (capoType === 'full') {
-      return Array(stringCount).fill(fullCapoFret);
-    }
-    if (capoType === 'drop-d') {
-      // Partial capo on strings 1 to 5 (leaving 6th low string open)
-      return Array.from({ length: stringCount }, (_, i) => (i === 0 ? null : 2));
-    }
-    return customCapoFrets.length === stringCount ? customCapoFrets : Array(stringCount).fill(null);
-  })();
+  const effectiveCapoFrets: (number | null)[] = buildCapoFrets(capoType, stringCount, fullCapoFret, customCapoFrets);
 
   // Synchronized click on fretboard: toggles note in active TAB column
   const handleFretboardNoteClick = (strIdx: number, fret: number) => {
@@ -118,8 +128,8 @@ export default function QuickCapturePage() {
   };
 
   const handleSaveCapture = async () => {
-    if (!selectedInstrumentId || !selectedTuningId) {
-      setError('Please select an instrument and tuning.');
+    if (!selectedInstrumentId || !currentTuning) {
+      setError(`Please select an instrument and a ${stringCount}-string tuning.`);
       return;
     }
 
@@ -130,41 +140,39 @@ export default function QuickCapturePage() {
       // 1. Create Capo record if capo is active
       let capoConfigId = null;
       if (capoType !== 'none') {
-        const capoRes = await fetch('/api/capos', {
+        const capoData = await fetchJson<{ id: string }>('/api/capos', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: capoType === 'full' ? `Full Capo Fret ${fullCapoFret}` : 'Partial Capo',
-            type: capoType,
+            type: capoType === 'full' ? 'full' : 'partial',
             stringFrets: effectiveCapoFrets,
           }),
         });
-        const capoData = await capoRes.json();
         capoConfigId = capoData.id;
       }
 
       // 2. Create physical Setup snapshot
-      const setupRes = await fetch('/api/setups', {
+      const setupData = await fetchJson<{ id: string }>('/api/setups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           instrumentId: selectedInstrumentId,
-          tuningId: selectedTuningId,
+          tuningId: currentTuning.id,
           capoConfigId,
           name: `${currentInstrument?.name} in ${currentTuning?.name} (${capoType !== 'none' ? 'Capo' : 'Open'})`,
         }),
       });
-      const setupData = await setupRes.json();
 
       // 3. Create Motif record
       const tagArray = motifTags.split(',').map(t => t.trim()).filter(Boolean);
-      const motifRes = await fetch('/api/motifs', {
+      const motifData = await fetchJson<any>('/api/motifs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: motifName.trim() || 'Untitled Quick Capture Idea',
           setupId: setupData.id,
-          tuningId: selectedTuningId,
+          tuningId: currentTuning.id,
           instrumentId: selectedInstrumentId,
           function: motifFunction,
           tabData: tabColumns,
@@ -173,7 +181,6 @@ export default function QuickCapturePage() {
         }),
       });
 
-      const motifData = await motifRes.json();
       setSavedMotif(motifData);
     } catch (err: any) {
       setError(`Save failed: ${err.message}`);
@@ -278,7 +285,7 @@ export default function QuickCapturePage() {
           </label>
           <select
             value={selectedInstrumentId}
-            onChange={(e) => setSelectedInstrumentId(e.target.value)}
+            onChange={(e) => handleInstrumentChange(e.target.value)}
             className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5 text-xs text-stone-900 focus:outline-none focus:border-stone-800"
           >
             {instruments.map((inst) => (
@@ -296,15 +303,16 @@ export default function QuickCapturePage() {
             <span>2. TUNING</span>
           </label>
           <select
-            value={selectedTuningId}
+            value={currentTuning ? selectedTuningId : ''}
             onChange={(e) => setSelectedTuningId(e.target.value)}
             className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5 text-xs text-stone-900 focus:outline-none focus:border-stone-800"
           >
+            {!currentTuning && <option value="">— No {stringCount}-string tuning selected —</option>}
             {tunings
               .filter((t) => t.stringCount === stringCount)
               .map((tun) => (
                 <option key={tun.id} value={tun.id}>
-                  {tun.humanId} — {tun.name} ({JSON.parse(tun.pitches).join(' ')})
+                  {tun.humanId} — {tun.name} ({safePitchArray(tun.pitches).join(' ')})
                 </option>
               ))}
           </select>
@@ -318,14 +326,14 @@ export default function QuickCapturePage() {
           <div className="flex items-center gap-2">
             <select
               value={capoType}
-              onChange={(e) => setCapoType(e.target.value)}
+              onChange={(e) => setCapoType(e.target.value as CapoMode)}
               className="flex-1 bg-white border border-stone-300 rounded px-2.5 py-1.5 text-xs text-stone-900"
             >
               <option value="none">Open (No Capo)</option>
               <option value="full">Full Capo</option>
-              <option value="drop-d">Drop D Partial (Strings 1-5)</option>
+              <option value="partial-skip-bass">Partial: all but bass-side string (S{stringCount} open)</option>
             </select>
-            {capoType === 'full' && (
+            {(capoType === 'full' || capoType === 'partial-skip-bass') && (
               <select
                 value={fullCapoFret}
                 onChange={(e) => setFullCapoFret(parseInt(e.target.value, 10))}

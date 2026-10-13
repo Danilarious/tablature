@@ -1,56 +1,48 @@
 import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase } from '@/app/db/client';
-import { stringSets } from '@/app/db/schema';
+import { instruments, stringSets } from '@/app/db/schema';
 import { eq } from 'drizzle-orm';
+import { apiErrorResponse, HttpError, readJsonBody } from '@/app/lib/api/http';
+import { assertStringAssignmentsMatch, stringSetInputSchema } from '@/app/lib/validation/schemas';
 
 export async function GET(req: Request) {
   try {
     const { db } = getDatabase();
     const { searchParams } = new URL(req.url);
     const instrumentId = searchParams.get('instrumentId');
-
-    let rows;
-    if (instrumentId) {
-      rows = await db.select().from(stringSets).where(eq(stringSets.instrumentId, instrumentId));
-    } else {
-      rows = await db.select().from(stringSets);
-    }
+    const rows = await db.select().from(stringSets).where(instrumentId ? eq(stringSets.instrumentId, instrumentId) : undefined);
     return NextResponse.json(rows);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return apiErrorResponse(error, 'string-sets.GET');
   }
 }
 
 export async function POST(req: Request) {
   try {
     const { db } = getDatabase();
-    const body = await req.json();
-
-    if (!body.name || !body.stringAssignments) {
-      return NextResponse.json(
-        { error: 'Name and string assignments are required.' },
-        { status: 400 }
-      );
-    }
-
-    const now = Date.now();
-    const newSet = {
-      id: body.id || uuidv4(),
-      instrumentId: body.instrumentId || null,
-      name: body.name.trim(),
-      installedDate: body.installedDate || null,
-      stringAssignments: typeof body.stringAssignments === 'string'
-        ? body.stringAssignments
-        : JSON.stringify(body.stringAssignments),
-      notes: body.notes ? body.notes.trim() : null,
-      isActive: body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1,
-      createdAt: now,
-    };
-
-    await db.insert(stringSets).values(newSet);
-    return NextResponse.json(newSet, { status: 201 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const body = stringSetInputSchema.parse(await readJsonBody(req));
+    const created = db.transaction((tx) => {
+      if (body.instrumentId) {
+        const inst = tx.select().from(instruments).where(eq(instruments.id, body.instrumentId)).get();
+        if (!inst) throw new HttpError(404, 'Instrument not found.');
+        assertStringAssignmentsMatch(body.stringAssignments, inst.stringCount);
+      }
+      const record = {
+        id: body.id || uuidv4(),
+        instrumentId: body.instrumentId ?? null,
+        name: body.name,
+        installedDate: body.installedDate ?? null,
+        stringAssignments: JSON.stringify(body.stringAssignments),
+        notes: body.notes ?? null,
+        isActive: body.isActive === false ? 0 : 1,
+        createdAt: Date.now(),
+      };
+      tx.insert(stringSets).values(record).run();
+      return record;
+    });
+    return NextResponse.json(created, { status: 201 });
+  } catch (error) {
+    return apiErrorResponse(error, 'string-sets.POST');
   }
 }

@@ -145,7 +145,8 @@ export async function seedDatabase() {
       stringCount: 5,
       defaultScaleLength: 26.25,
       scaleLengthUnit: 'in',
-      perStringSpeakingLengths: JSON.stringify([26.25, 26.25, 26.25, 26.25, 19.75]),
+      // Canonical order (index 0 = bass-side): physical 5th string is the short thumb string.
+      perStringSpeakingLengths: JSON.stringify([19.75, 26.25, 26.25, 26.25, 26.25]),
       notes: 'Scale length incomplete; shorter 5th string speaking length (~19.75") pegged at 5th fret.',
       isArchived: 0,
       createdAt: now,
@@ -404,7 +405,8 @@ export async function seedDatabase() {
       humanId: 'T-007',
       name: '5-String Banjo Open G',
       stringCount: 5,
-      pitches: JSON.stringify(['D4', 'B3', 'G3', 'D3', 'g4']), // Reentrant: 5th string is high g4
+      // Canonical physical order [5th, 4th, 3rd, 2nd, 1st]; reentrant high G4 stays at index 0.
+      pitches: JSON.stringify(['G4', 'D3', 'G3', 'B3', 'D4']),
       tonalCenter: 'G Major',
       tags: JSON.stringify(['Banjo', 'Reentrant', 'Old-Time']),
       notes: 'Reentrant tuning with high 5th string (g4) on short thumb peg.',

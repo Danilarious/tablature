@@ -56,3 +56,4 @@ exports/*
 *.m4a
 *.mov
 *.mp4
+*.tsbuildinfo

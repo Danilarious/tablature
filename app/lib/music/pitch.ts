@@ -89,6 +89,27 @@ export function calculateSoundingPitch(
   return transposePitch(openPitch, capoOffset + fretOffset);
 }
 
+/** True when the string is valid scientific pitch notation (legacy lowercase letters accepted). */
+export function isValidPitch(pitchStr: unknown): pitchStr is string {
+  return typeof pitchStr === 'string' && parsePitch(pitchStr) !== null;
+}
+
+/**
+ * Effective vibrating length between a capo and the saddle, for DISPLAY only:
+ *   L_eff = L / 2^(capoFret / 12)
+ * A capo does not change the physical tension of an un-retuned string, because
+ * T ∝ (L·f)² and L_eff·f_capo = L·f_open. Tension must therefore always be computed
+ * from the open pitch at the full physical scale length (see calculateStringTension).
+ */
+export function calculateEffectiveVibratingLength(
+  scaleLengthInches: number | null | undefined,
+  capoFret: number | null | undefined
+): number | null {
+  if (!scaleLengthInches || scaleLengthInches <= 0) return null;
+  const capo = typeof capoFret === 'number' && capoFret > 0 ? capoFret : 0;
+  return scaleLengthInches / Math.pow(2, capo / 12);
+}
+
 /**
  * String Tension Physics:
  * Formula: T = (UW * (2 * L * F)^2) / 386.4

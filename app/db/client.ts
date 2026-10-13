@@ -25,7 +25,8 @@ export function getDatabase() {
   return { db: dbInstance, sqlite: sqliteRaw };
 }
 
-function initializeTables(sqlite: InstanceType<typeof Database>) {
+/** Current (pre-migration) schema bootstrap. Exported for in-memory tests. */
+export function initializeTables(sqlite: InstanceType<typeof Database>) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS instruments (
       id TEXT PRIMARY KEY,

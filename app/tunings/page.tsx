@@ -4,6 +4,17 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Radio, Plus, Printer, X, Save } from 'lucide-react';
 import { parsePitch } from '@/app/lib/music/pitch';
+import { physicalStringNumber } from '@/app/lib/music/string-order';
+import { describeApiError } from '@/app/lib/api/client';
+
+function safePitchArray(raw: unknown): string[] {
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function TuningsPage() {
   const [tunings, setTunings] = useState<any[]>([]);
@@ -23,8 +34,9 @@ export default function TuningsPage() {
   const fetchTunings = async () => {
     try {
       const res = await fetch('/api/tunings');
+      if (!res.ok) throw new Error(`Failed to load tunings (HTTP ${res.status})`);
       const data = await res.json();
-      setTunings(data);
+      setTunings(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -39,8 +51,8 @@ export default function TuningsPage() {
   const handleStringCountChange = (count: number) => {
     setStringCount(count);
     if (count === 5) {
-      // 5-string banjo default
-      setPitches(['D4', 'B3', 'G3', 'D3', 'g4']);
+      // 5-string banjo, canonical physical order: [5th (short, reentrant G4), 4th, 3rd, 2nd, 1st]
+      setPitches(['G4', 'D3', 'G3', 'B3', 'D4']);
     } else if (count === 7) {
       // 7-string guitar default
       setPitches(['B1', 'E2', 'A2', 'D3', 'G3', 'B3', 'E4']);
@@ -58,7 +70,7 @@ export default function TuningsPage() {
     for (let i = 0; i < pitches.length; i++) {
       const parsed = parsePitch(pitches[i]);
       if (!parsed) {
-        setValidationError(`Invalid pitch format on String ${i + 1}: "${pitches[i]}". Use format like E2, A2, D3, F#3.`);
+        setValidationError(`Invalid pitch on String ${physicalStringNumber(i, pitches.length)}: "${pitches[i]}". Use format like E2, A2, D3, F#3.`);
         return;
       }
     }
@@ -86,9 +98,13 @@ export default function TuningsPage() {
         setTags('');
         setNotes('');
         await fetchTunings();
+      } else {
+        const body = await res.json().catch(() => null);
+        setValidationError(describeApiError(body, res.status));
       }
     } catch (err) {
       console.error(err);
+      setValidationError('Save failed: could not reach the local server.');
     } finally {
       setSaving(false);
     }
@@ -126,7 +142,7 @@ export default function TuningsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {tunings.map((tun) => {
-            const pitchArr: string[] = JSON.parse(tun.pitches);
+            const pitchArr: string[] = safePitchArray(tun.pitches);
 
             return (
               <div
@@ -147,7 +163,7 @@ export default function TuningsPage() {
 
                   {/* Pitches Box */}
                   <div className="bg-stone-50 border border-stone-200 p-2.5 rounded my-2 flex items-center justify-between">
-                    <span className="text-stone-400 text-[10px] uppercase font-bold">PITCHES</span>
+                    <span className="text-stone-400 text-[10px] uppercase font-bold" title="Listed bass-side string first">PITCHES (BASS→TREBLE)</span>
                     <span className="font-bold text-sm tracking-wider text-stone-950 font-mono">
                       {pitchArr.join('  ')}
                     </span>
@@ -252,12 +268,15 @@ export default function TuningsPage() {
               {/* String Pitch Inputs */}
               <div className="space-y-1">
                 <label className="text-[11px] text-stone-600 font-bold">
-                  PITCHES (ORDERED SCIENTIFIC PITCH: E2, A2, etc.)
+                  PITCHES — BASS-SIDE STRING FIRST → TREBLE-SIDE (scientific pitch: E2, A2, ...)
                 </label>
+                <p className="text-[10px] text-stone-400">
+                  Enter strings in physical order across the neck. Reentrant strings (e.g. banjo short 5th = G4) keep their physical position.
+                </p>
                 <div className="grid grid-cols-6 sm:grid-cols-7 gap-2">
                   {pitches.map((p, idx) => (
                     <div key={idx} className="flex flex-col items-center">
-                      <span className="text-[10px] text-stone-400 mb-0.5">#{idx + 1}</span>
+                      <span className="text-[10px] text-stone-400 mb-0.5">S{physicalStringNumber(idx, pitches.length)}</span>
                       <input
                         type="text"
                         required
