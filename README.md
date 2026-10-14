@@ -171,7 +171,7 @@ Understanding where data lives is important for backups, multi-device use, and s
 - **GitHub contains only application code and migrations**, never your private notebook data. All personal data lives locally on the machine running the server.
 
 ### Planned MSA2 / NAS deployment
-When deploying to a dedicated NAS or small-board computer (e.g., MSA2):
+When deploying to a dedicated mini PC or home server (e.g., Minisforum MS-A2):
 
 - Run both the Next.js app server and SQLite **on the NAS's own local filesystem**. Browsers on your Mac, iPad, or phone connect over LAN or Tailscale — they do not hold the database.
 - **Do not run independent production databases on both the Mac and the NAS.** The NAS should become the single authoritative notebook. Running two separate live databases produces a split-brain situation: entries made on one machine are not visible on the other, and there is no automatic merge.

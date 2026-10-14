@@ -9,7 +9,7 @@ import * as schema from '../../db/schema';
 import { applyMigrations, resolveMigrationsFolder } from '../../db/migrate';
 import { acquireMaintenanceLock, claimOpenProcess, readMaintenanceLock } from '../../db/locks';
 import { saveAttachment } from '../services/attachments';
-import { createBackup, listBackups, pruneBackups, sha256File, verifyBackup } from './backup';
+import { BACKUP_APP_NAME, BACKUP_DB_PATH, BACKUP_FORMAT, BACKUP_FORMAT_VERSION, createBackup, listBackups, pruneBackups, sha256File, verifyBackup } from './backup';
 import { restoreBackup } from './restore';
 
 let base: string;
@@ -157,6 +157,324 @@ describe('retention', () => {
     expect(listBackups(dirs.backupsDir)).toHaveLength(2);
     expect(fs.existsSync(path.join(dirs.backupsDir, 'unrelated-folder'))).toBe(true);
     expect(() => pruneBackups(dirs.backupsDir, 0)).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listBackups / pruneBackups strict validation (fix: backup pruning safety)
+// ---------------------------------------------------------------------------
+
+describe('listBackups strict manifest validation', () => {
+  // Valid sha256 shape (64 lowercase hex chars); content not verified at recognition time.
+  const VALID_SHA256 = 'a'.repeat(64);
+
+  function makeValidManifest(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      format: BACKUP_FORMAT,
+      formatVersion: BACKUP_FORMAT_VERSION,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      label: null,
+      app: { name: BACKUP_APP_NAME, version: '0.1.0' },
+      schema: { appliedMigrations: [], latestMigration: null },
+      database: { path: BACKUP_DB_PATH, bytes: 100, sha256: VALID_SHA256, integrityCheck: 'ok', tableCounts: {} },
+      media: { fileCount: 0, totalBytes: 0, files: [] },
+      warnings: [],
+      ...overrides,
+    });
+  }
+
+  /** Creates a candidate backup directory. Pass withDbFile=true for a valid-format entry. */
+  function makeDir(name: string, manifestContent?: string | null, withDbFile = false) {
+    const d = path.join(dirs.backupsDir, name);
+    fs.mkdirSync(d, { recursive: true });
+    if (manifestContent !== undefined && manifestContent !== null) {
+      fs.writeFileSync(path.join(d, 'manifest.json'), manifestContent);
+    }
+    if (withDbFile) {
+      fs.mkdirSync(path.join(d, 'database'), { recursive: true });
+      fs.writeFileSync(path.join(d, 'database', 'notebook.db'), 'fake-sqlite-data');
+    }
+    return d;
+  }
+
+  it('includes a directory with a valid BxB manifest and database file', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:01.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('excludes a directory with malformed (non-JSON) manifest', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', '{ not valid json');
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with no manifest.json at all', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z');
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a missing required field (no app.name)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ app: { version: '0.1.0' } }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with the wrong format identifier (foreign app)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ format: 'other-backup-tool' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an unsupported format version (too new)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ formatVersion: 999 }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with formatVersion 0 (below minimum)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ formatVersion: 0 }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a lookalike directory (matching format string but no required fields)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', JSON.stringify({ format: BACKUP_FORMAT, formatVersion: 1 }));
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a foreign nonempty app.name', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ app: { name: 'foreign-app', version: '1.0.0' } }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an invalid (non-ISO) createdAt', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ createdAt: 'not-a-date' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an empty createdAt', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ createdAt: '' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an unexpected database.path', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ database: { path: 'db/other.db', bytes: 100, sha256: VALID_SHA256, integrityCheck: 'ok', tableCounts: {} } }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory whose database file is missing', () => {
+    // Manifest is otherwise valid but no database/notebook.db file exists.
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest());
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory whose database file is a symlink', () => {
+    const targetFile = path.join(base, 'real.db');
+    fs.writeFileSync(targetFile, 'fake-sqlite-data');
+    const d = makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest());
+    fs.mkdirSync(path.join(d, 'database'), { recursive: true });
+    fs.symlinkSync(targetFile, path.join(d, 'database', 'notebook.db'));
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with invalid database.bytes (negative)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ database: { path: BACKUP_DB_PATH, bytes: -1, sha256: VALID_SHA256, integrityCheck: 'ok', tableCounts: {} } }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an invalid sha256 in database (wrong length)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ database: { path: BACKUP_DB_PATH, bytes: 100, sha256: 'abc', integrityCheck: 'ok', tableCounts: {} } }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an unsafe media file path (path traversal)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/../../escape.db', bytes: 4, sha256: VALID_SHA256 }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a media entry with a non-media/ path prefix', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'other/file.wav', bytes: 4, sha256: VALID_SHA256 }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a media entry with an invalid sha256', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/audio.wav', bytes: 4, sha256: 'notasha256' }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an invalid media bytes value (negative)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/audio.wav', bytes: -1, sha256: VALID_SHA256 }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a symlinked directory', () => {
+    const realDir = path.join(base, 'real-backup');
+    fs.mkdirSync(path.join(realDir, 'database'), { recursive: true });
+    fs.writeFileSync(path.join(realDir, 'database', 'notebook.db'), 'fake');
+    fs.writeFileSync(path.join(realDir, 'manifest.json'), makeValidManifest());
+    const symlinkDir = path.join(dirs.backupsDir, 'bxb-backup-2026-01-01T00-00-01-000Z');
+    fs.symlinkSync(realDir, symlinkDir);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('dry-run pruning deletes nothing', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:01.000Z' }), true);
+    makeDir('bxb-backup-2026-01-01T00-00-02-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:02.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(2);
+    pruneBackups(dirs.backupsDir, 1, true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(2);
+  });
+
+  it('never targets a path outside backupsDir via directory name traversal', () => {
+    const escapeDir = path.join(dirs.backupsDir, 'bxb-backup-../../outside');
+    try {
+      fs.mkdirSync(escapeDir, { recursive: true });
+    } catch {
+      return; // OS won't create it — good
+    }
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  // ── P2 regression: directory-name pattern is fully anchored ──────────────────────────
+
+  it('excludes a lookalike directory whose name has a trailing .partial.saved suffix', () => {
+    // The old regex had no end-anchor, so "…Z.partial.saved" slipped past the name check.
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z.partial.saved', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory whose timestamp has four millisecond digits instead of three', () => {
+    // toISOString() always emits exactly 3 ms digits; 4 digits is a lookalike, not a real backup.
+    makeDir('bxb-backup-2026-01-01T00-00-00-0000Z', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('includes a directory whose name has a valid label suffix', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z-my-label', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('excludes a directory whose label segment uses a bare "Z" without a preceding hyphen', () => {
+    // "ZExtraStuff" must not be accepted as though it were a valid label separator.
+    makeDir('bxb-backup-2026-01-01T00-00-00-000ZExtraStuff', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  // ── P2 regression: canonical ISO timestamp validation ────────────────────────────────
+
+  it('excludes a directory with a date-only createdAt (no time component)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a calendar-invalid createdAt (Feb 30)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-02-30T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a createdAt missing the millisecond field', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a createdAt using forward slashes instead of hyphens', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026/01/01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  // ── P2 regression: media path must stay strictly inside media/ subdirectory ─────────
+
+  it('excludes a media entry whose path traverses out of media/ via ..', () => {
+    // media/../database/notebook.db starts with "media/" but resolves to database/notebook.db.
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/../database/notebook.db', bytes: 4, sha256: VALID_SHA256 }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a media entry that navigates above the backup directory root', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/../../outside.db', bytes: 4, sha256: VALID_SHA256 }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  // ── P2 regression: folder timestamp must match manifest createdAt ────────────────────
+
+  it('rejects a directory whose folder timestamp differs from manifest createdAt', () => {
+    // A valid manifest with createdAt 2026-01-01 placed in a directory claiming 2025-01-01.
+    makeDir('bxb-backup-2025-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('rejects a far-future lookalike whose folder timestamp does not match the manifest', () => {
+    // 9999-12-31 is structurally valid but the manifest has a real timestamp.
+    makeDir('bxb-backup-9999-12-31T23-59-59-999Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('rejects a directory with a calendar-impossible folder timestamp', () => {
+    // Month 13 passes digit regex but fails the manifest round-trip check.
+    // The manifest must also carry a calendar-impossible createdAt to match the dir name;
+    // isCanonicalISOTimestamp rejects it via round-trip comparison.
+    makeDir('bxb-backup-2026-13-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-13-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('accepts a valid directory whose folder timestamp exactly matches manifest createdAt', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('accepts a labeled directory whose timestamp matches createdAt and label is valid', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z-pre-migrate', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z', label: 'pre-migrate' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('rejects a lookalike with matching timestamp but invalid chars after the timestamp', () => {
+    // "ZExtraStuff" is caught by BACKUP_DIR_NAME_RE end-anchor (from P2-1 fix).
+    makeDir('bxb-backup-2026-01-01T00-00-00-000ZExtraStuff', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('pruneBackups never removes a genuine backup in favor of a lookalike', async () => {
+    // Create a real backup, then place a structurally valid lookalike with a future timestamp.
+    const live = openLive();
+    live.sqlite.close();
+    const realNow = () => new Date(Date.UTC(2026, 0, 1, 0, 0, 1));
+    await createBackup({ ...dirs, now: realNow });
+    // Lookalike: valid dir name and manifest, but timestamp mismatch (future dir, past manifest).
+    makeDir('bxb-backup-9999-12-31T23-59-59-999Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    // Only the real backup is recognized; the lookalike is invisible to retention.
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+    pruneBackups(dirs.backupsDir, 1);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('real backup produced by createBackup() is recognized', async () => {
+    const live = openLive();
+    insertMotif(live.db, 'motif-a', 'M-001', 'test');
+    live.sqlite.close();
+    await createBackup({ ...dirs });
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('unrelated files and directories in backupsDir remain untouched after pruning', async () => {
+    const unrelated = path.join(dirs.backupsDir, 'my-notes.txt');
+    fs.writeFileSync(unrelated, 'keep me');
+    const unrelatedDir = path.join(dirs.backupsDir, 'unrelated-folder');
+    fs.mkdirSync(unrelatedDir);
+    const live = openLive();
+    live.sqlite.close();
+    let t = Date.UTC(2026, 0, 1);
+    const now = () => new Date((t += 1000));
+    for (let i = 0; i < 2; i++) await createBackup({ ...dirs, now });
+    pruneBackups(dirs.backupsDir, 1);
+    expect(fs.existsSync(unrelated)).toBe(true);
+    expect(fs.existsSync(unrelatedDir)).toBe(true);
   });
 });
 

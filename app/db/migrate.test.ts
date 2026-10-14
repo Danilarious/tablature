@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LEGACY_RUNTIME_SCHEMA_SQL } from '../test/fixtures/legacy-schema';
 import { LEGACY_BANJO_INSTRUMENT, LEGACY_BANJO_TUNING } from '../lib/music/string-order';
-import { applyMigrations, getMigrationStatus, MigrationError, resolveMigrationsFolder, verifyLegacySchema } from './migrate';
+import { applyMigrations, getMigrationStatus, loadMigrations, MigrationError, resolveMigrationsFolder, verifyLegacySchema } from './migrate';
 
 const MIGRATIONS = resolveMigrationsFolder();
 let tmp: string;
@@ -269,6 +269,62 @@ describe('unrecognized applied migration rows (fix B)', () => {
     const db = legacyFixture(path.join(tmp, 'unmatched-legacy.db'));
     const result = applyMigrations(db, MIGRATIONS, { backupDir: path.join(tmp, 'bkp-unmatched') });
     expect(result.adoptedLegacy).toBe(true);
+    db.close();
+  });
+});
+
+describe('applyMigrations journal-gap rejection (P2 regression)', () => {
+  const allMigrations = loadMigrations(MIGRATIONS);
+
+  /** Injects a migration row with the correct hash directly into __drizzle_migrations. */
+  function injectMigrationRow(db: Database.Database, tag: string) {
+    const m = allMigrations.find((x) => x.tag === tag);
+    if (!m) throw new Error(`migration not found: ${tag}`);
+    db.exec(`CREATE TABLE IF NOT EXISTS __drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`);
+    db.prepare(`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)`).run(m.hash, m.when);
+  }
+
+  it('rejects a gapped journal (only 0002 applied; 0000 and 0001 absent)', () => {
+    // This is the exact path that openNotebookDatabase() takes via applyMigrations().
+    // Before this fix, the gapped journal had no pending migrations and applyMigrations()
+    // returned success, allowing the application to open the inconsistent database.
+    const db = new Database(':memory:');
+    injectMigrationRow(db, '0002_canonical_banjo_string_order');
+    expect(() => applyMigrations(db, MIGRATIONS)).toThrow(MigrationError);
+    expect(() => applyMigrations(db, MIGRATIONS)).toThrow(/gap/i);
+    // Database must be unchanged — no new rows added.
+    const rows = db.prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at').all() as { created_at: number }[];
+    const when0002 = allMigrations.find((m) => m.tag === '0002_canonical_banjo_string_order')!.when;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].created_at).toBe(when0002);
+    db.close();
+  });
+
+  it('rejects a middle-gap journal (0000 + 0002 applied, 0001 absent)', () => {
+    const db = new Database(':memory:');
+    injectMigrationRow(db, '0000_baseline');
+    injectMigrationRow(db, '0002_canonical_banjo_string_order');
+    expect(() => applyMigrations(db, MIGRATIONS)).toThrow(MigrationError);
+    expect(() => applyMigrations(db, MIGRATIONS)).toThrow(/gap/i);
+    db.close();
+  });
+
+  it('accepts a valid contiguous prefix (only baseline actually applied)', () => {
+    // Apply baseline via a partial migrations folder, then confirm applyMigrations() runs
+    // the pending 0001+0002 without error — a valid prefix is not a gap.
+    const partialDir = path.join(tmp, 'partial-gap-test');
+    fs.cpSync(MIGRATIONS, partialDir, { recursive: true });
+    const journalPath = path.join(partialDir, 'meta', '_journal.json');
+    const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+    journal.entries = [journal.entries[0]]; // keep only 0000_baseline
+    fs.writeFileSync(journalPath, JSON.stringify(journal));
+    const db = new Database(':memory:');
+    applyMigrations(db, partialDir); // actually applies baseline SQL + records journal row
+    // Full journal sees 0001+0002 as pending; no gap in applied set.
+    expect(() => applyMigrations(db, MIGRATIONS)).not.toThrow();
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations).toHaveLength(0);
+    expect(status.pending).toHaveLength(0);
     db.close();
   });
 });

@@ -24,14 +24,14 @@ beforeEach(() => {
   // @next/env uses process.env.NODE_ENV to pick which .env files to load. Set 'development'
   // to match how launch-app.sh uses resolve-env.cjs (next dev context).
   savedNodeEnv = process.env.NODE_ENV;
-  process.env.NODE_ENV = 'development';
+  (process.env as Record<string, string>).NODE_ENV = 'development';
   resetEnv();
 });
 
 afterEach(() => {
   delete process.env[TEST_KEY];
   delete process.env.BXB_TEST_BASE;
-  process.env.NODE_ENV = savedNodeEnv;
+  (process.env as Record<string, string | undefined>).NODE_ENV = savedNodeEnv;
   resetEnv();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });

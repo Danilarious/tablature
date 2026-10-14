@@ -84,6 +84,12 @@ export interface MigrationStatus {
   pending: { tag: string; when: number }[];
   /** Applied rows newer than any local migration: DB comes from a newer app version. */
   newerThanApp: boolean;
+  /**
+   * Local migrations whose timestamp is at or before the last applied timestamp but
+   * that are absent from the DB's migration journal. A non-empty list means the
+   * applied rows do not form a contiguous prefix of the local journal.
+   */
+  gapMigrations: { tag: string; when: number }[];
 }
 
 export function getMigrationStatus(sqlite: Sqlite, folder: string = resolveMigrationsFolder()): MigrationStatus {
@@ -102,7 +108,17 @@ export function getMigrationStatus(sqlite: Sqlite, folder: string = resolveMigra
     .filter((m) => (state === 'legacy-unversioned' ? m.tag !== BASELINE_TAG : last === null || m.when > last))
     .map((m) => ({ tag: m.tag, when: m.when }));
   const newestLocal = migrations.length > 0 ? migrations[migrations.length - 1].when : 0;
-  return { state, applied, pending, newerThanApp: last !== null && last > newestLocal };
+  // Gap detection: any local migration at or before the last applied timestamp that is
+  // absent from the DB journal. A valid applied set must be a contiguous prefix of the
+  // local journal; a gap means a migration was skipped, leaving the schema inconsistent.
+  const appliedTimestamps = new Set(rows.map((r) => Number(r.created_at)));
+  const gapMigrations =
+    last !== null
+      ? migrations
+          .filter((m) => m.when <= last && !appliedTimestamps.has(m.when))
+          .map((m) => ({ tag: m.tag, when: m.when }))
+      : [];
+  return { state, applied, pending, newerThanApp: last !== null && last > newestLocal, gapMigrations };
 }
 
 /** Expected columns per table from the baseline snapshot (single source: drizzle-kit output). */
@@ -155,29 +171,63 @@ export interface ApplyResult {
   backupPath: string | null;
 }
 
+/**
+ * Returns a human-readable incompatibility reason if the database's applied migration
+ * journal cannot be reconciled with the local migration files, or null if compatible.
+ *
+ * Incompatible conditions (fail-closed; the database must not be migrated or opened):
+ *  - An applied row whose timestamp matches no local migration (divergent/unknown build).
+ *  - The latest applied timestamp is newer than the newest local migration (app is behind).
+ *  - An applied migration's file on disk was modified after it was applied.
+ *
+ * This is the single authoritative compatibility check, shared by applyMigrations() and the
+ * read-only CLI status/pending paths so all callers enforce the same rules consistently.
+ */
+export function migrationCompatibilityError(status: MigrationStatus): string | null {
+  const unmatched = status.applied.filter((a) => a.tag === null);
+  if (unmatched.length > 0) {
+    return (
+      `Database has applied migration row(s) not found in this app's migration journal ` +
+      `(timestamps: ${unmatched.map((a) => a.createdAt).join(', ')}). ` +
+      `This database may have been written by a different or divergent build.`
+    );
+  }
+  if (status.newerThanApp) {
+    return 'This database was written by a newer version of BxB Music Notebook. Update the app first.';
+  }
+  // Applied rows must form a contiguous prefix of the local migration journal.
+  // A gap (e.g. 0002 applied but 0001 absent) leaves the schema in an unknown state
+  // because pending-migration inference is based on the last applied timestamp; missing
+  // earlier migrations would be silently skipped.
+  if (status.gapMigrations.length > 0) {
+    return (
+      `Applied migration journal has gap(s): migration(s) ` +
+      `${status.gapMigrations.map((g) => g.tag).join(', ')} ` +
+      `should be applied before later migration(s) but are absent from the database. ` +
+      `Restore from a backup written before the journal became inconsistent.`
+    );
+  }
+  const tampered = status.applied.filter((a) => a.tag !== null && !a.hashMatches);
+  if (tampered.length > 0) {
+    return `Applied migration file(s) were modified after being applied: ${tampered.map((t) => t.tag).join(', ')}. Restore the original files.`;
+  }
+  return null;
+}
+
 export function applyMigrations(sqlite: Sqlite, folder: string = resolveMigrationsFolder(), opts: ApplyOptions = {}): ApplyResult {
   const log = opts.log ?? (() => {});
   const now = opts.now ?? (() => new Date());
   const migrations = loadMigrations(folder);
   const before = getMigrationStatus(sqlite, folder);
 
-  // Reject every applied row that cannot be matched to a known local migration, regardless
-  // of its timestamp. A null tag means the row came from a divergent or unknown build; the
-  // pending-migration inference would otherwise silently open or migrate an unknown schema.
-  const unmatched = before.applied.filter((a) => a.tag === null);
-  if (unmatched.length > 0) {
-    throw new MigrationError(
-      `Database has applied migration row(s) not found in this app's migration journal ` +
-        `(timestamps: ${unmatched.map((a) => a.createdAt).join(', ')}). ` +
-        `This database may have been written by a different or divergent build; nothing was changed.`
-    );
-  }
-  if (before.newerThanApp) {
-    throw new MigrationError('This database was written by a newer version of BxB Music Notebook. Update the app; nothing was changed.');
-  }
-  const tampered = before.applied.filter((a) => a.tag && !a.hashMatches);
-  if (tampered.length > 0) {
-    throw new MigrationError(`Applied migration file(s) were modified after being applied: ${tampered.map((t) => t.tag).join(', ')}. Restore the original files; nothing was changed.`);
+  // Single authoritative compatibility gate — delegates to migrationCompatibilityError()
+  // which covers unmatched rows, newer-than-app, journal gaps, and tampered files.
+  // Using the shared function here ensures that applyMigrations() (the application path
+  // through openNotebookDatabase) enforces exactly the same rules as the CLI path; without
+  // this, a gapped journal detected by db:pending would still allow the app to open.
+  const compatError = migrationCompatibilityError(before);
+  if (compatError) {
+    throw new MigrationError(`${compatError} Nothing was changed.`);
   }
   if (before.state === 'legacy-unversioned') {
     const problems = verifyLegacySchema(sqlite, folder);
@@ -204,6 +254,9 @@ export function applyMigrations(sqlite: Sqlite, folder: string = resolveMigratio
   try {
     // Re-read inside the write lock: another process may have migrated meanwhile.
     const inTx = getMigrationStatus(sqlite, folder);
+    // Repeat the full compatibility check inside the lock; state may have changed.
+    const inTxCompatError = migrationCompatibilityError(inTx);
+    if (inTxCompatError) throw new MigrationError(inTxCompatError);
     sqlite.exec(`CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`);
     const record = sqlite.prepare(`INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at) VALUES (?, ?)`);
     if (inTx.state === 'legacy-unversioned') {
