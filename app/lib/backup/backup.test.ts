@@ -198,7 +198,7 @@ describe('listBackups strict manifest validation', () => {
   }
 
   it('includes a directory with a valid BxB manifest and database file', () => {
-    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest(), true);
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:01.000Z' }), true);
     expect(listBackups(dirs.backupsDir)).toHaveLength(1);
   });
 
@@ -321,8 +321,8 @@ describe('listBackups strict manifest validation', () => {
   });
 
   it('dry-run pruning deletes nothing', () => {
-    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest(), true);
-    makeDir('bxb-backup-2026-01-01T00-00-02-000Z', makeValidManifest(), true);
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:01.000Z' }), true);
+    makeDir('bxb-backup-2026-01-01T00-00-02-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:02.000Z' }), true);
     expect(listBackups(dirs.backupsDir)).toHaveLength(2);
     pruneBackups(dirs.backupsDir, 1, true);
     expect(listBackups(dirs.backupsDir)).toHaveLength(2);
@@ -400,6 +400,58 @@ describe('listBackups strict manifest validation', () => {
       media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/../../outside.db', bytes: 4, sha256: VALID_SHA256 }] },
     }), true);
     expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  // ── P2 regression: folder timestamp must match manifest createdAt ────────────────────
+
+  it('rejects a directory whose folder timestamp differs from manifest createdAt', () => {
+    // A valid manifest with createdAt 2026-01-01 placed in a directory claiming 2025-01-01.
+    makeDir('bxb-backup-2025-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('rejects a far-future lookalike whose folder timestamp does not match the manifest', () => {
+    // 9999-12-31 is structurally valid but the manifest has a real timestamp.
+    makeDir('bxb-backup-9999-12-31T23-59-59-999Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('rejects a directory with a calendar-impossible folder timestamp', () => {
+    // Month 13 passes digit regex but fails the manifest round-trip check.
+    // The manifest must also carry a calendar-impossible createdAt to match the dir name;
+    // isCanonicalISOTimestamp rejects it via round-trip comparison.
+    makeDir('bxb-backup-2026-13-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-13-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('accepts a valid directory whose folder timestamp exactly matches manifest createdAt', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('accepts a labeled directory whose timestamp matches createdAt and label is valid', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z-pre-migrate', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z', label: 'pre-migrate' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('rejects a lookalike with matching timestamp but invalid chars after the timestamp', () => {
+    // "ZExtraStuff" is caught by BACKUP_DIR_NAME_RE end-anchor (from P2-1 fix).
+    makeDir('bxb-backup-2026-01-01T00-00-00-000ZExtraStuff', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('pruneBackups never removes a genuine backup in favor of a lookalike', async () => {
+    // Create a real backup, then place a structurally valid lookalike with a future timestamp.
+    const live = openLive();
+    live.sqlite.close();
+    const realNow = () => new Date(Date.UTC(2026, 0, 1, 0, 0, 1));
+    await createBackup({ ...dirs, now: realNow });
+    // Lookalike: valid dir name and manifest, but timestamp mismatch (future dir, past manifest).
+    makeDir('bxb-backup-9999-12-31T23-59-59-999Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00.000Z' }), true);
+    // Only the real backup is recognized; the lookalike is invisible to retention.
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+    pruneBackups(dirs.backupsDir, 1);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
   });
 
   it('real backup produced by createBackup() is recognized', async () => {

@@ -12,7 +12,7 @@ import { spawnSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LEGACY_RUNTIME_SCHEMA_SQL } from '../app/test/fixtures/legacy-schema';
-import { applyMigrations, getMigrationStatus, migrationCompatibilityError, resolveMigrationsFolder, type MigrationStatus } from '../app/db/migrate';
+import { applyMigrations, getMigrationStatus, loadMigrations, migrationCompatibilityError, resolveMigrationsFolder, type MigrationStatus } from '../app/db/migrate';
 
 const MIGRATIONS = resolveMigrationsFolder();
 
@@ -128,6 +128,120 @@ describe('migrationCompatibilityError', () => {
     const err = migrationCompatibilityError(status);
     expect(err).toMatch(/modified after being applied/);
     db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrationCompatibilityError — journal-gap detection (P2 regression)
+// ---------------------------------------------------------------------------
+
+describe('migrationCompatibilityError gap detection', () => {
+  /** Injects a specific local migration row (correct hash) by tag. */
+  function injectMigrationRow(db: Database.Database, tag: string) {
+    const migrations = loadMigrations(MIGRATIONS);
+    const m = migrations.find((x) => x.tag === tag);
+    if (!m) throw new Error(`migration not found: ${tag}`);
+    db.exec(`CREATE TABLE IF NOT EXISTS __drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`);
+    db.prepare(`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)`).run(m.hash, m.when);
+  }
+
+  it('returns null for an empty database (no rows, no gap)', () => {
+    const db = new Database(':memory:');
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations).toHaveLength(0);
+    expect(migrationCompatibilityError(status)).toBeNull();
+    db.close();
+  });
+
+  it('returns null for a valid first-migration-only prefix (only baseline applied)', () => {
+    const db = new Database(':memory:');
+    injectMigrationRow(db, '0000_baseline');
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations).toHaveLength(0);
+    expect(migrationCompatibilityError(status)).toBeNull();
+    db.close();
+  });
+
+  it('returns null for a valid multi-migration prefix (baseline + 0001 applied)', () => {
+    const db = new Database(':memory:');
+    injectMigrationRow(db, '0000_baseline');
+    injectMigrationRow(db, '0001_review_flags_string_provenance');
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations).toHaveLength(0);
+    expect(migrationCompatibilityError(status)).toBeNull();
+    db.close();
+  });
+
+  it('returns null for a complete valid journal (all migrations applied)', () => {
+    const db = new Database(':memory:');
+    applyMigrations(db, MIGRATIONS);
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations).toHaveLength(0);
+    expect(migrationCompatibilityError(status)).toBeNull();
+    db.close();
+  });
+
+  it('reports a gap when only 0001 is applied (baseline absent)', () => {
+    const db = new Database(':memory:');
+    injectMigrationRow(db, '0001_review_flags_string_provenance');
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations.map((g) => g.tag)).toContain('0000_baseline');
+    const err = migrationCompatibilityError(status);
+    expect(err).toMatch(/gap/i);
+    expect(err).toContain('0000_baseline');
+    db.close();
+  });
+
+  it('reports a gap when only 0002 is applied (baseline and 0001 absent)', () => {
+    // This is the exact reported example: correctly hashed later migration, earlier ones absent.
+    const db = new Database(':memory:');
+    injectMigrationRow(db, '0002_canonical_banjo_string_order');
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations.map((g) => g.tag)).toContain('0000_baseline');
+    expect(status.gapMigrations.map((g) => g.tag)).toContain('0001_review_flags_string_provenance');
+    expect(status.pending).toHaveLength(0); // nothing after 0002 — the bug's symptom
+    const err = migrationCompatibilityError(status);
+    expect(err).toMatch(/gap/i);
+    db.close();
+  });
+
+  it('reports a gap when baseline and 0002 are applied but 0001 is missing (middle gap)', () => {
+    const db = new Database(':memory:');
+    injectMigrationRow(db, '0000_baseline');
+    injectMigrationRow(db, '0002_canonical_banjo_string_order');
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.gapMigrations.map((g) => g.tag)).toEqual(['0001_review_flags_string_provenance']);
+    const err = migrationCompatibilityError(status);
+    expect(err).toMatch(/gap/i);
+    expect(err).toContain('0001_review_flags_string_provenance');
+    db.close();
+  });
+
+  it('db:pending exits 11 for a gapped journal', () => {
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    injectMigrationRow(db, '0002_canonical_banjo_string_order');
+    db.close();
+    const r = runCli('pending');
+    expect(r.exitCode).toBe(11);
+    expect(r.stderr).toMatch(/incompatible/i);
+  });
+
+  it('db:migrate exits 1 without touching the database for a gapped journal', () => {
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    injectMigrationRow(db, '0002_canonical_banjo_string_order');
+    db.close();
+    const r = runCli('migrate');
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/incompatible/i);
+    // No backup must have been created.
+    expect(fs.readdirSync(path.join(tmpDir, 'backups'))).toHaveLength(0);
+    // Database must be unchanged.
+    const check = new Database(dbPath, { readonly: true });
+    const rows = check.prepare(`SELECT created_at FROM __drizzle_migrations`).all() as { created_at: number }[];
+    check.close();
+    expect(rows).toHaveLength(1);
   });
 });
 

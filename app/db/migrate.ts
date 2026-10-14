@@ -84,6 +84,12 @@ export interface MigrationStatus {
   pending: { tag: string; when: number }[];
   /** Applied rows newer than any local migration: DB comes from a newer app version. */
   newerThanApp: boolean;
+  /**
+   * Local migrations whose timestamp is at or before the last applied timestamp but
+   * that are absent from the DB's migration journal. A non-empty list means the
+   * applied rows do not form a contiguous prefix of the local journal.
+   */
+  gapMigrations: { tag: string; when: number }[];
 }
 
 export function getMigrationStatus(sqlite: Sqlite, folder: string = resolveMigrationsFolder()): MigrationStatus {
@@ -102,7 +108,17 @@ export function getMigrationStatus(sqlite: Sqlite, folder: string = resolveMigra
     .filter((m) => (state === 'legacy-unversioned' ? m.tag !== BASELINE_TAG : last === null || m.when > last))
     .map((m) => ({ tag: m.tag, when: m.when }));
   const newestLocal = migrations.length > 0 ? migrations[migrations.length - 1].when : 0;
-  return { state, applied, pending, newerThanApp: last !== null && last > newestLocal };
+  // Gap detection: any local migration at or before the last applied timestamp that is
+  // absent from the DB journal. A valid applied set must be a contiguous prefix of the
+  // local journal; a gap means a migration was skipped, leaving the schema inconsistent.
+  const appliedTimestamps = new Set(rows.map((r) => Number(r.created_at)));
+  const gapMigrations =
+    last !== null
+      ? migrations
+          .filter((m) => m.when <= last && !appliedTimestamps.has(m.when))
+          .map((m) => ({ tag: m.tag, when: m.when }))
+      : [];
+  return { state, applied, pending, newerThanApp: last !== null && last > newestLocal, gapMigrations };
 }
 
 /** Expected columns per table from the baseline snapshot (single source: drizzle-kit output). */
@@ -178,6 +194,18 @@ export function migrationCompatibilityError(status: MigrationStatus): string | n
   }
   if (status.newerThanApp) {
     return 'This database was written by a newer version of BxB Music Notebook. Update the app first.';
+  }
+  // Applied rows must form a contiguous prefix of the local migration journal.
+  // A gap (e.g. 0002 applied but 0001 absent) leaves the schema in an unknown state
+  // because pending-migration inference is based on the last applied timestamp; missing
+  // earlier migrations would be silently skipped.
+  if (status.gapMigrations.length > 0) {
+    return (
+      `Applied migration journal has gap(s): migration(s) ` +
+      `${status.gapMigrations.map((g) => g.tag).join(', ')} ` +
+      `should be applied before later migration(s) but are absent from the database. ` +
+      `Restore from a backup written before the journal became inconsistent.`
+    );
   }
   const tampered = status.applied.filter((a) => a.tag !== null && !a.hashMatches);
   if (tampered.length > 0) {

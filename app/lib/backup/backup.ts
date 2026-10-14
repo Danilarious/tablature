@@ -288,7 +288,11 @@ export async function verifyBackup(dir: string, migrationsFolder: string = resol
  *  3. format === BACKUP_FORMAT ('bxb-notebook-backup').
  *  4. formatVersion is an integer in [1, BACKUP_FORMAT_VERSION].
  *  5. app.name === BACKUP_APP_NAME ('bxb-music-notebook') — exact match.
- *  6. createdAt is a non-empty string that parses as a valid ISO date.
+ *  6. createdAt matches the exact canonical ISO 8601 format from Date.toISOString() and
+ *     passes a calendar-validity round-trip.
+ * 6b. The folder's timestamp segment equals createdAt transformed by the same
+ *     .replace(/[:.]/g,'-') used in backupDirName(), preventing lookalike directories
+ *     whose folder timestamp differs from (or contradicts) the manifest.
  *  7. database.path === BACKUP_DB_PATH ('database/notebook.db') — exact match.
  *  8. The database file exists inside dir as a regular non-symlinked file.
  *  9. database.bytes is a nonnegative finite integer.
@@ -328,6 +332,12 @@ function isRecognizedBackupManifest(dir: string): boolean {
     if (m.app?.name !== BACKUP_APP_NAME) return false;
     // 6. createdAt — must be the exact canonical ISO 8601 format from Date.toISOString().
     if (!isCanonicalISOTimestamp(m.createdAt)) return false;
+    // 6b. The folder's timestamp segment must equal the createdAt-derived value.
+    //     Uses the identical .replace(/[:.]/g, '-') as backupDirName() so creation and
+    //     recognition cannot drift. A far-future or manufactured timestamp (e.g.
+    //     9999-99-99T99-99-99-999Z) that doesn't match the manifest is rejected here.
+    const expectedDirPrefix = BACKUP_DIR_PREFIX + (m.createdAt as string).replace(/[:.]/g, '-');
+    if (!path.basename(dir).startsWith(expectedDirPrefix)) return false;
     // 7. database.path — exact match only.
     if (m.database?.path !== BACKUP_DB_PATH) return false;
     // 8. Database file must be a regular non-symlinked file inside dir.
