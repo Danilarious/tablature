@@ -161,6 +161,17 @@ export function applyMigrations(sqlite: Sqlite, folder: string = resolveMigratio
   const migrations = loadMigrations(folder);
   const before = getMigrationStatus(sqlite, folder);
 
+  // Reject every applied row that cannot be matched to a known local migration, regardless
+  // of its timestamp. A null tag means the row came from a divergent or unknown build; the
+  // pending-migration inference would otherwise silently open or migrate an unknown schema.
+  const unmatched = before.applied.filter((a) => a.tag === null);
+  if (unmatched.length > 0) {
+    throw new MigrationError(
+      `Database has applied migration row(s) not found in this app's migration journal ` +
+        `(timestamps: ${unmatched.map((a) => a.createdAt).join(', ')}). ` +
+        `This database may have been written by a different or divergent build; nothing was changed.`
+    );
+  }
   if (before.newerThanApp) {
     throw new MigrationError('This database was written by a newer version of BxB Music Notebook. Update the app; nothing was changed.');
   }

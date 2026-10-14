@@ -42,14 +42,13 @@ fi
 
 cd "$PROJECT_DIR" || exit 1
 
-# Resolve the data directory the same way `next dev` will: shell env first, then .env files.
+# Resolve the data directory using the same dotenv precedence as Next.js so the launcher
+# and the server always agree on which database to open.  scripts/resolve-env.cjs delegates
+# to @next/env (the exact library Next uses) instead of custom grep/sed parsing, which
+# cannot handle quoted paths, spaces, variable expansion, or dotenv-style comments.
 if [ -z "${MUSIC_NOTEBOOK_DATA_DIR:-}" ]; then
-  for f in .env.development.local .env.local .env.development .env; do
-    if [ -f "$f" ]; then
-      v="$(grep -E '^MUSIC_NOTEBOOK_DATA_DIR=' "$f" | tail -n 1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//')"
-      if [ -n "$v" ]; then export MUSIC_NOTEBOOK_DATA_DIR="$v"; echo "Using MUSIC_NOTEBOOK_DATA_DIR from $f"; break; fi
-    fi
-  done
+  v="$(node "$SCRIPT_DIR/resolve-env.cjs" MUSIC_NOTEBOOK_DATA_DIR "$PROJECT_DIR" 2>/dev/null)"
+  if [ -n "$v" ]; then export MUSIC_NOTEBOOK_DATA_DIR="$v"; echo "Using MUSIC_NOTEBOOK_DATA_DIR from .env files"; fi
 fi
 DATA_DIR="${MUSIC_NOTEBOOK_DATA_DIR:-$PROJECT_DIR/storage}"
 mkdir -p "$DATA_DIR"

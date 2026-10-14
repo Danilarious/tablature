@@ -4,7 +4,7 @@ import path from 'path';
 import { Readable } from 'stream';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as schema from '../../db/schema';
 import { applyMigrations, resolveMigrationsFolder } from '../../db/migrate';
 import { acquireMaintenanceLock, claimOpenProcess, readMaintenanceLock } from '../../db/locks';
@@ -270,5 +270,103 @@ describe('attachment and media consistency', () => {
     const { dir, manifest } = await createBackup({ ...dirs });
     expect(manifest.media.fileCount).toBe(1);
     expect((await verifyBackup(dir)).ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Restore swap fault-injection tests (fix A)
+// ---------------------------------------------------------------------------
+
+describe('restore swap rollback (fault injection)', () => {
+
+  let renameSpy: ReturnType<typeof vi.spyOn<any, any>> | null = null;
+
+  afterEach(() => {
+    renameSpy?.mockRestore();
+    renameSpy = null;
+  });
+
+  /** Sets up a live database with one motif plus a valid backup, then returns the backup dir. */
+  async function setupLiveAndBackup(): Promise<string> {
+    const live = openLive();
+    insertMotif(live.db, 'motif-orig', 'M-001', 'original-data');
+    live.sqlite.close();
+    return (await createBackup({ ...dirs })).dir;
+  }
+
+  /** Verifies that the live layout (original database + media) is intact and usable. */
+  function assertLiveIntact() {
+    // Database must exist and have the original data.
+    expect(fs.existsSync(dirs.dbPath)).toBe(true);
+    const db = new Database(dirs.dbPath, { readonly: true, fileMustExist: true });
+    const rows = db.prepare('SELECT name FROM motifs WHERE id = ?').all('motif-orig') as { name: string }[];
+    db.close();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('original-data');
+    // Media directory must exist.
+    expect(fs.existsSync(dirs.mediaDir)).toBe(true);
+  }
+
+  // Identify swap-phase renames by source path: they live under base/ but NOT under base/backups/
+  // (the safety-backup createBackup rename has src inside backups/, so it is excluded).
+  function isSwapRename(src: string): boolean {
+    return src.startsWith(base) && !src.includes(`${path.sep}backups`) && !src.includes('/backups');
+  }
+
+  function injectRenameFailureAt(failOnSwapStep: number) {
+    const origRename: (...args: any[]) => void = fs.renameSync.bind(fs);
+    let swapCallCount = 0;
+    renameSpy = vi.spyOn(fs as any, 'renameSync').mockImplementation((...args: any[]) => {
+      const src = String(args[0]);
+      if (isSwapRename(src)) {
+        swapCallCount++;
+        if (swapCallCount === failOnSwapStep) {
+          throw Object.assign(new Error(`mock swap failure at step ${failOnSwapStep}`), { code: 'EXDEV' });
+        }
+      }
+      origRename(...args);
+    });
+  }
+
+  it('rolls back when the live-DB rename fails (first swap step)', async () => {
+    const dir = await setupLiveAndBackup();
+    injectRenameFailureAt(1);
+    await expect(restoreBackup({ backupDir: dir, ...dirs })).rejects.toThrow(/rolled back/i);
+    assertLiveIntact();
+  });
+
+  it('rolls back when the live-media rename fails (second swap step)', async () => {
+    const dir = await setupLiveAndBackup();
+    injectRenameFailureAt(2);
+    await expect(restoreBackup({ backupDir: dir, ...dirs })).rejects.toThrow(/rolled back/i);
+    assertLiveIntact();
+  });
+
+  it('rolls back when the staged-DB placement fails (third swap step)', async () => {
+    const dir = await setupLiveAndBackup();
+    injectRenameFailureAt(3);
+    await expect(restoreBackup({ backupDir: dir, ...dirs })).rejects.toThrow(/rolled back/i);
+    assertLiveIntact();
+  });
+
+  it('rolls back when the staged-media placement fails (fourth swap step)', async () => {
+    const dir = await setupLiveAndBackup();
+    injectRenameFailureAt(4);
+    await expect(restoreBackup({ backupDir: dir, ...dirs })).rejects.toThrow(/rolled back/i);
+    assertLiveIntact();
+  });
+
+  it('reports all unrecoverable paths when rollback itself fails', async () => {
+    const dir = await setupLiveAndBackup();
+    const origRename: (...args: any[]) => void = fs.renameSync.bind(fs);
+    let swapCallCount = 0;
+    renameSpy = vi.spyOn(fs as any, 'renameSync').mockImplementation((...args: any[]) => {
+      const src = String(args[0]);
+      if (isSwapRename(src)) swapCallCount++;
+      if (swapCallCount === 3) throw Object.assign(new Error('mock swap failure'), { code: 'EXDEV' }); // step 3 fails
+      if (swapCallCount >= 4) throw Object.assign(new Error('mock rollback failure'), { code: 'EXDEV' }); // rollback calls also fail
+      origRename(...args);
+    });
+    await expect(restoreBackup({ backupDir: dir, ...dirs })).rejects.toThrow(/manual recovery/i);
   });
 });

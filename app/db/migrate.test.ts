@@ -228,6 +228,51 @@ describe('auto-migration guard (distinguishes fresh from existing databases)', (
   });
 });
 
+describe('unrecognized applied migration rows (fix B)', () => {
+  /** Injects a row with an unknown timestamp directly into __drizzle_migrations. */
+  function injectUnknownRow(db: Database.Database, when: number) {
+    db.exec(`CREATE TABLE IF NOT EXISTS __drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`);
+    db.prepare(`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)`).run('abc123def456', when);
+  }
+
+  it('rejects an unrecognized row with an older timestamp (in-range, divergent build)', () => {
+    const db = new Database(':memory:');
+    const journal = JSON.parse(fs.readFileSync(path.join(MIGRATIONS, 'meta', '_journal.json'), 'utf8')) as { entries: { when: number }[] };
+    const midTimestamp = journal.entries[0].when + 1; // older than latest but not in journal
+    injectUnknownRow(db, midTimestamp);
+    expect(() => applyMigrations(db, MIGRATIONS)).toThrow(/not found in this app's migration journal/);
+    // Database must be unchanged (review_flags table does not exist).
+    expect(db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='review_flags'`).get()).toBeUndefined();
+    db.close();
+  });
+
+  it('rejects an unrecognized row with a newer timestamp (newerThanApp is not the only check)', () => {
+    const db = new Database(':memory:');
+    const journal = JSON.parse(fs.readFileSync(path.join(MIGRATIONS, 'meta', '_journal.json'), 'utf8')) as { entries: { when: number }[] };
+    const newerTimestamp = journal.entries[journal.entries.length - 1].when + 999_999;
+    injectUnknownRow(db, newerTimestamp);
+    // Both newerThanApp AND unmatched checks must fire; either is sufficient to reject.
+    expect(() => applyMigrations(db, MIGRATIONS)).toThrow();
+    db.close();
+  });
+
+  it('succeeds when all applied rows are recognized (fully up-to-date database)', () => {
+    const db = new Database(':memory:');
+    applyMigrations(db, MIGRATIONS); // apply all known migrations
+    // Applying again must be a no-op (idempotent).
+    const result = applyMigrations(db, MIGRATIONS);
+    expect(result.applied).toHaveLength(0);
+    db.close();
+  });
+
+  it('succeeds for the legacy-adoption path (no applied rows yet)', () => {
+    const db = legacyFixture(path.join(tmp, 'unmatched-legacy.db'));
+    const result = applyMigrations(db, MIGRATIONS, { backupDir: path.join(tmp, 'bkp-unmatched') });
+    expect(result.adoptedLegacy).toBe(true);
+    db.close();
+  });
+});
+
 describe('0002 SQL matches the documented legacy constants', () => {
   it('uses exactly the legacy and canonical values from string-order.ts', () => {
     const sql = fs.readFileSync(path.join(MIGRATIONS, '0002_canonical_banjo_string_order.sql'), 'utf8');

@@ -159,7 +159,28 @@ npm run media:orphans -- --move-to-trash # move unreferenced files to media/.tra
 
 ---
 
-## 6. Architecture Documentation & Roadmap
+## 6. Data Persistence and Deployment Model
+
+Understanding where data lives is important for backups, multi-device use, and safe deployment.
+
+### Where data is stored
+- **Instruments, tunings, setups, motifs, compositions, and TAB** are stored server-side in SQLite (`storage/database/notebook.db`). The browser holds no authoritative copy.
+- **Media files** (audio memos, attachments) are stored server-side under `storage/media/`, with their metadata (filename, MIME type, parent record) recorded in SQLite.
+- **localStorage is used only for Quick Capture draft recovery.** When you start a Quick Capture session, the in-progress text and TAB are mirrored to `localStorage` so that an accidental page reload does not lose a partially entered motif. This draft is cleared on successful save or explicit discard. It is not a substitute for saving.
+- **Pending unsaved audio** (a recording in progress that has not yet been committed to a saved record) is not currently durable across a page reload. This is a known limitation; it is on the roadmap but out of scope for the current hardening pass.
+- **GitHub contains only application code and migrations**, never your private notebook data. All personal data lives locally on the machine running the server.
+
+### Planned MSA2 / NAS deployment
+When deploying to a dedicated NAS or small-board computer (e.g., MSA2):
+
+- Run both the Next.js app server and SQLite **on the NAS's own local filesystem**. Browsers on your Mac, iPad, or phone connect over LAN or Tailscale — they do not hold the database.
+- **Do not run independent production databases on both the Mac and the NAS.** The NAS should become the single authoritative notebook. Running two separate live databases produces a split-brain situation: entries made on one machine are not visible on the other, and there is no automatic merge.
+- **SQLite must not be accessed over SMB/NFS by multiple machines simultaneously.** Network filesystem locking is unreliable for SQLite and can corrupt the database. The process that runs the app must have direct filesystem access to `storage/`.
+- **Backups must be replicated to a separate physical destination.** `npm run backup` writes a verified backup folder to `storage/backups/` on the same disk as the database. Copy these folders to an external drive, cloud storage, or another machine periodically. A backup on the same disk as the original does not protect against disk failure.
+
+---
+
+## 7. Architecture Documentation & Roadmap
 
 Detailed architectural and design specifications are maintained in `docs/`:
 - [`docs/PRODUCT-SPEC.md`](docs/PRODUCT-SPEC.md) — Comprehensive functional requirements.

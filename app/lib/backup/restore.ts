@@ -18,8 +18,10 @@ import { createBackup, verifyBackup } from './backup';
  *  5. Take a full pre-restore safety backup of the current data (always).
  *  6. Stage the backup in <dataDir>/.restore-<ts>/, apply pending migrations to the STAGED copy
  *     and re-check integrity, so an unusable backup never replaces live data.
- *  7. Move the current database (+ -wal/-shm) and media aside, then move staged copies into
- *     place. Nothing is deleted; replaced files remain on disk.
+ *  7. Swap: move live database+media aside; move staged copies into place.
+ *     Every completed filesystem move is tracked. If any step fails, all completed moves are
+ *     rolled back in reverse order so the original live layout is restored automatically.
+ *     If rollback itself encounters errors, the error message names every affected path.
  */
 
 export interface RestoreOptions {
@@ -37,13 +39,6 @@ export interface RestoreResult {
   safetyBackupDir: string | null;
   replacedDir: string;
   appliedToStaged: string[];
-}
-
-function moveIfExists(src: string, dest: string) {
-  if (fs.existsSync(src)) {
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.renameSync(src, dest);
-  }
 }
 
 export async function restoreBackup(opts: RestoreOptions): Promise<RestoreResult> {
@@ -121,20 +116,77 @@ export async function restoreBackup(opts: RestoreOptions): Promise<RestoreResult
     }
     log(`Staged copy validated${appliedToStaged.length ? ` (upgraded: ${appliedToStaged.join(', ')})` : ''}.`);
 
-    // 7. Swap: move current files aside (never delete), then move staged files into place.
+    // 7. Swap with rollback tracking.
+    //
+    // Every completed filesystem move is recorded. If any later step fails, all completed
+    // moves are reversed so the original live database and media remain paired and usable.
+    //
+    // Preflight: assert staged files exist before touching the live layout.
+    if (!fs.existsSync(stagedDb)) {
+      throw new Error('Internal error: staged database file vanished before swap (aborting without touching live data).');
+    }
+
     const replacedDir = path.join(stagingDir, 'replaced');
+    type CompletedMove = { src: string; dest: string };
+    const completed: CompletedMove[] = [];
+
+    const safeMove = (src: string, dest: string): void => {
+      if (!fs.existsSync(src)) return; // file/dir is optional (e.g. -wal/-shm may not exist)
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.renameSync(src, dest);
+      completed.push({ src, dest });
+    };
+
+    const rollbackCompleted = (): string[] => {
+      const errors: string[] = [];
+      for (const { src, dest } of [...completed].reverse()) {
+        try {
+          fs.renameSync(dest, src);
+        } catch (e) {
+          errors.push(`could not restore ${path.relative(opts.baseDir, src)}: ${(e as Error).message}`);
+        }
+      }
+      completed.length = 0;
+      return errors;
+    };
+
+    const recoveryHint =
+      `Recovery artifacts remain in ${path.relative(opts.baseDir, stagingDir)}` +
+      (safetyBackupDir ? `; safety backup at backups/${path.basename(safetyBackupDir)}` : '') +
+      '.';
+
     try {
-      for (const suffix of ['', '-wal', '-shm']) moveIfExists(`${opts.dbPath}${suffix}`, path.join(replacedDir, `notebook.db${suffix}`));
-      moveIfExists(opts.mediaDir, path.join(replacedDir, 'media'));
-      fs.renameSync(stagedDb, opts.dbPath);
-      for (const suffix of ['-wal', '-shm']) moveIfExists(`${stagedDb}${suffix}`, `${opts.dbPath}${suffix}`);
-      fs.renameSync(stagedMedia, opts.mediaDir);
-    } catch (err) {
+      // Move live database (+ WAL/SHM) aside.
+      for (const suffix of ['', '-wal', '-shm']) {
+        safeMove(`${opts.dbPath}${suffix}`, path.join(replacedDir, `notebook.db${suffix}`));
+      }
+      // Move live media aside.
+      safeMove(opts.mediaDir, path.join(replacedDir, 'media'));
+      // Move staged database (+ WAL/SHM) into place.
+      safeMove(stagedDb, opts.dbPath);
+      for (const suffix of ['-wal', '-shm']) {
+        safeMove(`${stagedDb}${suffix}`, `${opts.dbPath}${suffix}`);
+      }
+      // Move staged media into place.
+      safeMove(stagedMedia, opts.mediaDir);
+    } catch (swapErr) {
+      const swapDetail = swapErr instanceof Error ? swapErr.message : String(swapErr);
+      const rollbackErrors = rollbackCompleted();
+      if (rollbackErrors.length > 0) {
+        throw new Error(
+          `Restore swap failed and rollback also encountered errors — manual recovery required. ` +
+            `Swap error: ${swapDetail}. ` +
+            `Rollback errors: ${rollbackErrors.join('; ')}. ` +
+            recoveryHint
+        );
+      }
       throw new Error(
-        `Restore swap failed (${err instanceof Error ? err.message : String(err)}). Nothing was deleted: previous files are in ${path.relative(opts.baseDir, replacedDir)}, ` +
-          `staged files in ${path.relative(opts.baseDir, path.dirname(stagedDb))}${safetyBackupDir ? `, safety backup in backups/${path.basename(safetyBackupDir)}` : ''}.`
+        `Restore swap failed and was rolled back; the original database and media are in their original locations. ` +
+          `Reason: ${swapDetail}. ` +
+          recoveryHint
       );
     }
+
     log('Restore complete. Previous files kept in the .restore-* folder; remove it manually once satisfied.');
     return { safetyBackupDir, replacedDir, appliedToStaged };
   } finally {
