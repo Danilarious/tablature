@@ -102,6 +102,41 @@ describe('attachment management', () => {
     expect(visibleFiles()).toEqual([]);
   });
 
+  it('delete: file is moved before row is removed (trash-move failure leaves attachment fully intact)', async () => {
+    const rec = await saveAttachment({ db: t.db, mediaDir, file: fileOf('memo.webm', 'abc'), parentType: 'motif', parentId: 'motif-1' });
+    // Make .trash a regular file so mkdirSync fails (simulates a write-permission failure).
+    fs.writeFileSync(path.join(mediaDir, '.trash'), 'not-a-dir');
+    expect(() => deleteAttachment(t.db, mediaDir, rec.id)).toThrow();
+    // Attachment row must still exist (operation was rolled back before the DB delete).
+    expect(getAttachment(t.db, rec.id)).toBeDefined();
+    // Original file must still be in place.
+    expect(fs.existsSync(path.join(mediaDir, rec.filePath))).toBe(true);
+  });
+
+  it('delete: row deletion failure after successful move rolls back the file to its original location', async () => {
+    const rec = await saveAttachment({ db: t.db, mediaDir, file: fileOf('memo.webm', 'abc'), parentType: 'motif', parentId: 'motif-1' });
+    // Install a trigger that rejects the DELETE so we can observe the rollback.
+    t.sqlite.exec(`CREATE TRIGGER fail_del BEFORE DELETE ON attachments BEGIN SELECT RAISE(ABORT, 'simulated delete failure'); END;`);
+    expect(() => deleteAttachment(t.db, mediaDir, rec.id)).toThrow(/simulated delete failure/);
+    // Row must still exist.
+    expect(getAttachment(t.db, rec.id)).toBeDefined();
+    // File must be back at its original location (rollback succeeded).
+    expect(fs.existsSync(path.join(mediaDir, rec.filePath))).toBe(true);
+    // .trash/ should be empty (or just the directory, no file that was "moved" there).
+    const trashFiles = fs.existsSync(path.join(mediaDir, '.trash')) ? fs.readdirSync(path.join(mediaDir, '.trash')) : [];
+    expect(trashFiles).toHaveLength(0);
+  });
+
+  it('delete: cleans up a dangling row whose file is already absent', async () => {
+    const rec = await saveAttachment({ db: t.db, mediaDir, file: fileOf('memo.webm', 'abc'), parentType: 'motif', parentId: 'motif-1' });
+    // Simulate file already gone (e.g., manual deletion or prior failed delete).
+    fs.unlinkSync(path.join(mediaDir, rec.filePath));
+    const { trashedPath } = deleteAttachment(t.db, mediaDir, rec.id);
+    expect(trashedPath).toBeNull();
+    expect(getAttachment(t.db, rec.id)).toBeUndefined();
+    expect(visibleFiles()).toHaveLength(0);
+  });
+
   it('orphan scan reports without modifying anything', async () => {
     const rec = await saveAttachment({ db: t.db, mediaDir, file: fileOf('memo.webm', 'abc'), parentType: 'motif', parentId: 'motif-1' });
     fs.writeFileSync(path.join(mediaDir, 'stray.mp3'), 'x');

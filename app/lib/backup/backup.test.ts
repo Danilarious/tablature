@@ -7,7 +7,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import { applyMigrations, resolveMigrationsFolder } from '../../db/migrate';
-import { acquireMaintenanceLock, readMaintenanceLock } from '../../db/locks';
+import { acquireMaintenanceLock, claimOpenProcess, readMaintenanceLock } from '../../db/locks';
 import { saveAttachment } from '../services/attachments';
 import { createBackup, listBackups, pruneBackups, sha256File, verifyBackup } from './backup';
 import { restoreBackup } from './restore';
@@ -157,5 +157,118 @@ describe('retention', () => {
     expect(listBackups(dirs.backupsDir)).toHaveLength(2);
     expect(fs.existsSync(path.join(dirs.backupsDir, 'unrelated-folder'))).toBe(true);
     expect(() => pruneBackups(dirs.backupsDir, 0)).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Atomic restore/open coordination (fix A)
+// ---------------------------------------------------------------------------
+
+describe('restore/open atomic coordination', () => {
+  async function makeBackup() {
+    const live = openLive();
+    insertMotif(live.db, 'motif-a', 'M-001', 'x');
+    live.sqlite.close();
+    return (await createBackup({ ...dirs })).dir;
+  }
+
+  it('restoreBackup refuses when a live open marker exists and releases the maintenance lock (race ordering 1: app before restore)', async () => {
+    const dir = await makeBackup();
+    // Simulate the app having already claimed its open marker (it registered before restore checked).
+    fs.writeFileSync(path.join(dirs.databaseDir, `.open-${process.ppid}`), 'x');
+    await expect(restoreBackup({ backupDir: dir, ...dirs })).rejects.toThrow(/open in another process/);
+    // Maintenance lock must be released regardless of whether the refusal happened before or
+    // after lock acquisition.
+    expect(readMaintenanceLock(dirs.databaseDir)).toBeNull();
+  });
+
+  it('claimOpenProcess removes its own marker and throws when a maintenance lock is held (race ordering 2: restore before app)', () => {
+    // Simulate restore having already acquired the maintenance lock.
+    const releaseLock = acquireMaintenanceLock(dirs.databaseDir, 'test-restore');
+    try {
+      // The app now tries to open: it writes its marker, then sees the lock and must refuse.
+      expect(() => claimOpenProcess(dirs.databaseDir)).toThrow(/maintenance/);
+      // The open marker for this process must NOT be left behind.
+      expect(fs.existsSync(path.join(dirs.databaseDir, `.open-${process.pid}`))).toBe(false);
+    } finally {
+      releaseLock();
+    }
+  });
+
+  it('restoreBackup ignores stale open markers from dead processes', async () => {
+    const dir = await makeBackup();
+    fs.writeFileSync(path.join(dirs.databaseDir, '.open-999999'), 'x');
+    await expect(restoreBackup({ backupDir: dir, ...dirs })).resolves.toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Attachment/media consistency in backups (fix B)
+// ---------------------------------------------------------------------------
+
+describe('attachment and media consistency', () => {
+  it('backup fails (not just warns) when a DB-referenced attachment file is absent from media', async () => {
+    const live = openLive();
+    insertMotif(live.db, 'motif-a', 'M-001', 'x');
+    const att = await saveAttachment({
+      db: live.db,
+      mediaDir: dirs.mediaDir,
+      parentType: 'motif',
+      parentId: 'motif-a',
+      file: { name: 'take1.wav', type: 'audio/wav', size: 4, stream: Readable.from([Buffer.from('fake')]) },
+    });
+    // Simulate file deleted (or moved to trash) after the DB row was written.
+    fs.unlinkSync(path.join(dirs.mediaDir, att.filePath));
+    live.sqlite.close();
+
+    await expect(createBackup({ ...dirs })).rejects.toThrow(/absent from media/);
+    // No .partial directory should remain after the failure.
+    expect(fs.readdirSync(dirs.backupsDir).some((d) => d.endsWith('.partial'))).toBe(false);
+  });
+
+  it('verifyBackup rejects a backup whose database references an attachment absent from the manifest media', async () => {
+    // Create a valid backup with an attachment.
+    const live = openLive();
+    insertMotif(live.db, 'motif-a', 'M-001', 'x');
+    const att = await saveAttachment({
+      db: live.db,
+      mediaDir: dirs.mediaDir,
+      parentType: 'motif',
+      parentId: 'motif-a',
+      file: { name: 'take1.wav', type: 'audio/wav', size: 4, stream: Readable.from([Buffer.from('fake')]) },
+    });
+    live.sqlite.close();
+    const { dir } = await createBackup({ ...dirs });
+
+    // Tamper: remove the media file entry from manifest.json (but keep the DB and file intact).
+    // This simulates a backup created without the attachment media (e.g., by an older version).
+    const manifestPath = path.join(dir, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.media.files = manifest.media.files.filter((f: { path: string }) => !f.path.includes(att.filePath));
+    manifest.media.fileCount = manifest.media.files.length;
+    manifest.media.totalBytes = manifest.media.files.reduce((s: number, f: { bytes: number }) => s + f.bytes, 0);
+    // Also remove the physical file so the existing per-file checksum check doesn't interfere.
+    fs.rmSync(path.join(dir, 'media', att.filePath));
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const result = await verifyBackup(dir);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes(att.filePath))).toBe(true);
+  });
+
+  it('backup succeeds and verifies when all attachment files are present', async () => {
+    const live = openLive();
+    insertMotif(live.db, 'motif-a', 'M-001', 'x');
+    await saveAttachment({
+      db: live.db,
+      mediaDir: dirs.mediaDir,
+      parentType: 'motif',
+      parentId: 'motif-a',
+      file: { name: 'take1.wav', type: 'audio/wav', size: 4, stream: Readable.from([Buffer.from('fake')]) },
+    });
+    live.sqlite.close();
+    const { dir, manifest } = await createBackup({ ...dirs });
+    expect(manifest.media.fileCount).toBe(1);
+    expect((await verifyBackup(dir)).ok).toBe(true);
   });
 });

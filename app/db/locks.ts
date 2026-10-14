@@ -4,9 +4,23 @@ import path from 'path';
 /**
  * Process coordination for maintenance tasks (restore) on a single-user local database.
  *
- *  - Every process that opens the database through getDatabase() leaves a marker file
- *    `database/.open-<pid>` (removed on exit). Restore refuses while a live marker exists.
- *  - Restore holds `database/maintenance.lock`; getDatabase() refuses to open while it exists.
+ * Protocol (covers both race orderings atomically):
+ *
+ *  App side:
+ *    1. Write `.open-<pid>` FIRST (fail closed — throws if the marker cannot be created).
+ *    2. Re-read `maintenance.lock` AFTER writing the marker.
+ *    3. If the lock is held: remove the marker, throw.
+ *
+ *  Restore side:
+ *    1. Pre-check markers (fast-fail if the app is obviously running).
+ *    2. Acquire `maintenance.lock` exclusively.
+ *    3. Re-check markers INSIDE the lock (catches the race where the app claimed its marker
+ *       between the pre-check and the lock acquisition).
+ *    4. If a live marker is found: release the lock, throw.
+ *
+ * This ensures that every concurrent pair of "app opens DB" / "restore runs" is serialised:
+ * either the app sees the lock and refuses, or restore sees the marker and refuses.
+ *
  * Stale markers from crashed processes are detected with a liveness check and ignored.
  */
 
@@ -48,14 +62,37 @@ export function acquireMaintenanceLock(databaseDir: string, reason: string): () 
   return () => fs.rmSync(lockPath, { force: true });
 }
 
+// Tracks whether the exit handler for a given marker has been registered.
 const registered = new Set<string>();
 
-/** Records that this process has the database open (used by restore to refuse unsafe swaps). */
-export function registerOpenProcess(databaseDir: string): void {
+/**
+ * Claims this process's open-database marker BEFORE opening SQLite, then re-checks the
+ * maintenance lock so that any concurrent restore that acquired the lock after our marker
+ * appeared will see the marker and refuse.
+ *
+ * Throws (and removes the marker) if:
+ *  - The marker file cannot be created (fail closed — no silent coordination failure).
+ *  - A maintenance lock is already held.
+ *
+ * Returns a release function that removes the marker file immediately (e.g., on a failed
+ * open). The process.once('exit') handler also removes it on normal/abnormal exit.
+ */
+export function claimOpenProcess(databaseDir: string): () => void {
   const marker = path.join(databaseDir, `${OPEN_PREFIX}${process.pid}`);
-  if (registered.has(marker)) return;
+
+  // Step 1: Write the marker file first (fail closed on any I/O error).
   try {
-    fs.writeFileSync(marker, new Date().toISOString());
+    fs.mkdirSync(databaseDir, { recursive: true });
+    fs.writeFileSync(marker, new Date().toISOString(), { flag: 'w' });
+  } catch (err) {
+    throw new Error(
+      `Cannot create database coordination marker ${path.basename(marker)}: ` +
+        `${(err as Error).message}. Check that ${databaseDir} is writable.`
+    );
+  }
+
+  // Register the exit-time cleanup once per marker path.
+  if (!registered.has(marker)) {
     registered.add(marker);
     process.once('exit', () => {
       try {
@@ -64,9 +101,29 @@ export function registerOpenProcess(databaseDir: string): void {
         /* ignore */
       }
     });
-  } catch {
-    /* read-only filesystem: restore will fall back to the maintenance lock only */
   }
+
+  const release = () => {
+    try {
+      fs.rmSync(marker, { force: true });
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Step 2: Re-read the maintenance lock AFTER writing the marker.
+  // If a restore process already holds the lock, it will see our marker in its post-lock
+  // recheck; our recheck here handles the other ordering.
+  const lock = readMaintenanceLock(databaseDir);
+  if (lock) {
+    release();
+    throw new Error(
+      `The notebook is in maintenance (${lock.reason}, since ${lock.since}). ` +
+        `Wait for it to finish, or remove database/${MAINTENANCE_LOCK} if that process is no longer running.`
+    );
+  }
+
+  return release;
 }
 
 /** Other live processes that currently have the database open. */

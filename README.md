@@ -119,7 +119,7 @@ npm run db:status     # read-only: applied/pending migrations and review flags
 npm run db:migrate    # complete backup (database + media) first, then apply pending migrations
 npm run db:generate -- --name=<change>   # after editing schema.ts (developers)
 ```
-If you start the app with pending migrations, it applies them automatically after writing a database-only copy to `backups/pre-migrate-<timestamp>-to-<migration>.db`. All pending migrations run in one transaction: if any step fails, nothing changes and the server log explains how to recover. Databases created before migrations existed are *adopted*: their tables are verified against the baseline and recorded as migrated without altering any row.
+A fresh/empty database is initialized from migrations automatically on first start. An existing database with pending migrations is **not** migrated automatically — the server returns 503 and the log instructs you to run `npm run db:migrate` or use `scripts/launch-app.sh`. This prevents IDE auto-preview processes and builds from silently altering your data. `npm run db:migrate` creates a complete backup (database + media) first, then applies all pending migrations in one transaction: if any step fails, nothing changes and the backup is there to recover from. Databases created before migrations existed are *adopted*: their tables are verified against the baseline and recorded as migrated without altering any row.
 
 Migration `0002` corrects only the seeded 5-string banjo (`T-007` and the banjo's per-string speaking lengths) when they still exactly match the original seed values; other records are never reordered. Anything ambiguous is listed by `npm run db:status` under "Review flags".
 

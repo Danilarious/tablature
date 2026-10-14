@@ -206,18 +206,55 @@ export function updateAttachment(db: SyncDb, id: string, patch: { displayName?: 
   return { ...existing, ...next };
 }
 
-/** Removes the DB row and moves the file into media/.trash/ (recoverable). */
+/**
+ * Deletes an attachment row and moves its file to media/.trash/ (recoverable).
+ *
+ * Ordering is fail-safe:
+ *  1. Move the file to .trash/ FIRST. If this fails the row is untouched and the
+ *     attachment remains fully usable.
+ *  2. Delete the DB row AFTER a successful move. If the row deletion fails the file
+ *     is moved back to its original location so the attachment is consistent again.
+ *
+ * An already-absent file (missing from media but present in the DB, e.g. left from a
+ * prior failed operation) is treated as if it were already trashed: the row is deleted
+ * directly without any file operation, so the dangling reference is cleaned up safely.
+ *
+ * An invalid filePath (fails MEDIA_FILENAME_RE) indicates the row has no safe file path;
+ * the row is deleted directly.
+ */
 export function deleteAttachment(db: SyncDb, mediaDir: string, id: string): { trashedPath: string | null } {
   const existing = getAttachment(db, id);
   if (!existing) throw new HttpError(404, 'Attachment not found.');
-  db.delete(attachments).where(eq(attachments.id, id)).run();
-  if (!MEDIA_FILENAME_RE.test(existing.filePath)) return { trashedPath: null };
+
+  // No file to manage: invalid path or already-absent file — delete the row directly.
+  if (!MEDIA_FILENAME_RE.test(existing.filePath)) {
+    db.delete(attachments).where(eq(attachments.id, id)).run();
+    return { trashedPath: null };
+  }
   const src = path.join(mediaDir, existing.filePath);
-  if (!fs.existsSync(src)) return { trashedPath: null };
+  if (!fs.existsSync(src)) {
+    db.delete(attachments).where(eq(attachments.id, id)).run();
+    return { trashedPath: null };
+  }
+
+  // Step 1: Move the file first. Failure here leaves the attachment fully intact.
   const trashDir = path.join(mediaDir, '.trash');
   fs.mkdirSync(trashDir, { recursive: true });
   const dest = path.join(trashDir, `${Date.now()}-${existing.filePath}`);
   fs.renameSync(src, dest);
+
+  // Step 2: Delete the DB row. On failure, move the file back so nothing is lost.
+  try {
+    db.delete(attachments).where(eq(attachments.id, id)).run();
+  } catch (err) {
+    try {
+      fs.renameSync(dest, src);
+    } catch {
+      /* rollback failed: file is in .trash/, row is still in DB — orphan report will surface this */
+    }
+    throw err;
+  }
+
   return { trashedPath: dest };
 }
 

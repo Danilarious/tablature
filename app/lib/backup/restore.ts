@@ -11,13 +11,15 @@ import { createBackup, verifyBackup } from './backup';
  * Safety sequence:
  *  1. Verify the backup (manifest, checksums, integrity) and that its schema is not newer
  *     than this app.
- *  2. Refuse while any other process has the database open (the app must be stopped), then
- *     hold database/maintenance.lock so nothing opens the database mid-restore.
- *  3. Take a full pre-restore safety backup of the current data (always).
- *  4. Stage the backup in <dataDir>/.restore-<ts>/, apply pending migrations to the STAGED copy
+ *  2. Pre-check: refuse if any live open markers already exist (fast-fail).
+ *  3. Acquire `database/maintenance.lock` exclusively.
+ *  4. Post-lock recheck: refuse if a live open marker appeared between the pre-check and the
+ *     lock acquisition (covers the race where the app claimed its marker just before we locked).
+ *  5. Take a full pre-restore safety backup of the current data (always).
+ *  6. Stage the backup in <dataDir>/.restore-<ts>/, apply pending migrations to the STAGED copy
  *     and re-check integrity, so an unusable backup never replaces live data.
- *  5. Move the current database (+ -wal/-shm) and media aside into the staging folder, then move
- *     the staged copies into place. Nothing is deleted; the replaced files remain on disk.
+ *  7. Move the current database (+ -wal/-shm) and media aside, then move staged copies into
+ *     place. Nothing is deleted; replaced files remain on disk.
  */
 
 export interface RestoreOptions {
@@ -61,15 +63,29 @@ export async function restoreBackup(opts: RestoreOptions): Promise<RestoreResult
   }
   log(`Backup verified (${verification.manifest.media.fileCount} media files).`);
 
-  // 2. Refuse while the app (or anything else) has the database open.
+  // 2. Pre-check: refuse if any process already has the database open.
   fs.mkdirSync(databaseDir, { recursive: true });
-  const live = liveOpenProcesses(databaseDir);
-  if (live.length > 0) {
-    throw new Error(`The notebook database is open in another process (pid ${live.join(', ')}). Stop the app (and any dev server) before restoring.`);
+  const liveBefore = liveOpenProcesses(databaseDir);
+  if (liveBefore.length > 0) {
+    throw new Error(
+      `The notebook database is open in another process (pid ${liveBefore.join(', ')}). Stop the app (and any dev server) before restoring.`
+    );
   }
+
+  // 3. Acquire the maintenance lock exclusively.
   const release = acquireMaintenanceLock(databaseDir, 'restore');
   try {
-    // 3. Always keep a full safety backup of the current state.
+    // 4. Post-lock recheck: a new process may have written its open marker between the
+    //    pre-check and our lock acquisition (the other race ordering).
+    const liveAfterLock = liveOpenProcesses(databaseDir);
+    if (liveAfterLock.length > 0) {
+      throw new Error(
+        `The notebook database was opened by another process (pid ${liveAfterLock.join(', ')}) just before the restore lock was acquired. ` +
+          `Stop the app and try again.`
+      );
+    }
+
+    // 5. Always keep a full safety backup of the current state.
     let safetyBackupDir: string | null = null;
     if (fs.existsSync(opts.dbPath)) {
       const safety = await createBackup({ dbPath: opts.dbPath, mediaDir: opts.mediaDir, backupsDir: opts.backupsDir, label: 'pre-restore', migrationsFolder, now: opts.now });
@@ -77,7 +93,7 @@ export async function restoreBackup(opts: RestoreOptions): Promise<RestoreResult
       log(`Pre-restore safety backup: ${path.basename(safety.dir)}`);
     }
 
-    // 4. Stage and validate.
+    // 6. Stage and validate.
     const stamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, '-');
     const stagingDir = path.join(opts.baseDir, `.restore-${stamp}`);
     const stagedDb = path.join(stagingDir, 'staged', 'notebook.db');
@@ -105,7 +121,7 @@ export async function restoreBackup(opts: RestoreOptions): Promise<RestoreResult
     }
     log(`Staged copy validated${appliedToStaged.length ? ` (upgraded: ${appliedToStaged.join(', ')})` : ''}.`);
 
-    // 5. Swap: move current files aside (never delete), then move staged files into place.
+    // 7. Swap: move current files aside (never delete), then move staged files into place.
     const replacedDir = path.join(stagingDir, 'replaced');
     try {
       for (const suffix of ['', '-wal', '-shm']) moveIfExists(`${opts.dbPath}${suffix}`, path.join(replacedDir, `notebook.db${suffix}`));

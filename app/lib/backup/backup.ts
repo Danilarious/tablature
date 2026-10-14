@@ -156,7 +156,13 @@ export async function createBackup(opts: CreateBackupOptions): Promise<CreateBac
     }
     const copied = new Set(mediaFiles.map((f) => f.path.slice('media/'.length)));
     for (const p of info.attachmentPaths) {
-      if (!copied.has(p)) warnings.push(`Attachment file missing from live media (not in backup): ${p}`);
+      if (!copied.has(p)) {
+        throw new Error(
+          `Attachment referenced in the database ("${p}") is absent from media — ` +
+            `the file may have been deleted or moved to .trash/ after the database snapshot. ` +
+            `The backup was not saved. Try again after the deletion has settled, or restore from an earlier backup.`
+        );
+      }
     }
 
     const manifest: BackupManifest = {
@@ -223,6 +229,14 @@ export async function verifyBackup(dir: string, migrationsFolder: string = resol
     if (info.integrity !== 'ok') errors.push(`database integrity_check: ${info.integrity}`);
     for (const [t, n] of Object.entries(manifest.database.tableCounts)) {
       if (info.tableCounts[t] !== n) errors.push(`row count mismatch for ${t}`);
+    }
+    // Every attachment row in the backup database must have a corresponding media file in the
+    // backup. A missing file means the backup is incomplete and would produce a broken restore.
+    const manifestMediaPaths = new Set(manifest.media.files.map((f) => f.path.slice('media/'.length)));
+    for (const p of info.attachmentPaths) {
+      if (!manifestMediaPaths.has(p)) {
+        errors.push(`backup database references attachment file "${p}" which has no corresponding entry in the backup media`);
+      }
     }
   }
   return { ok: errors.length === 0, errors, manifest };

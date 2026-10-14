@@ -7,13 +7,12 @@ Drizzle ORM + better-sqlite3 + Tailwind. **Treat every change as brownfield data
 - Never delete, overwrite, reseed, or silently reorder existing user records.
 - `npm run db:seed` only seeds an *empty* database; never call it against a populated one.
 - UUIDs and human IDs (`T-###`, `P-###`, `M-###`, `C-###`) are permanent.
-- Schema changes go through Drizzle migrations in `drizzle/` (see "Migrations"; being added
-  in hardening milestone 3). Never add new `CREATE TABLE IF NOT EXISTS` or ad-hoc
-  `ALTER TABLE` in runtime code.
+- Schema changes go through Drizzle migrations in `drizzle/`. Never add new
+  `CREATE TABLE IF NOT EXISTS` or ad-hoc `ALTER TABLE` in runtime code.
 - Data migrations may only transform a record when it *exactly* matches a known legacy value.
   Anything ambiguous is preserved and recorded in `review_flags`.
-- Back up with the SQLite online backup API (`sqlite3 db ".backup 'dest'"`) before running
-  migrations against a real database. (The current `npm run backup` is NOT WAL-safe until M3.)
+- Back up with `npm run backup` (WAL-safe, SHA-256 verified) before running migrations against
+  a real database. `npm run db:migrate` creates a complete backup automatically.
 - Never commit `storage/**` contents, `imports/**`, `exports/**`, `*.db*`, audio, `.env*`,
   absolute local paths, or Tailscale/LAN addresses.
 - Do not fabricate string unit weights or manufacturer data. Unknown stays `null`/"unknown".
@@ -50,9 +49,14 @@ Drizzle ORM + better-sqlite3 + Tailwind. **Treat every change as brownfield data
 - Tests/builds/previews must not touch the real DB: set `MUSIC_NOTEBOOK_DATA_DIR` to a temp
   dir for every agent-run command. Never run `next dev` and `next build` concurrently (they
   share `.next/`).
-- Pending (M3): `npm run db:migrate`, `db:status`, `db:generate`, WAL-safe `backup`/`restore`.
+- `npm run db:status` — read-only migration status and review flags.
+- `npm run db:migrate` — creates a complete backup then applies pending migrations.
+- `npm run db:generate -- --name=<change>` — generate a migration after editing schema.ts.
+- `npm run backup` / `npm run restore` — WAL-safe disaster-recovery backup and restore.
+- A fresh/empty database is initialized from migrations automatically on first start.
+  An existing database with pending migrations is **not** migrated automatically; the server
+  returns 503 and instructs the user to run `npm run db:migrate` or `scripts/launch-app.sh`.
 
 ## Network
-- Pending (M3): `npm run dev` / `npm start` will bind `127.0.0.1`, with LAN exposure
-  (`dev:lan`/`start:lan`) as an explicit opt-in with **no application authentication**.
-  Until then `npm run dev` binds `0.0.0.0`.
+- `npm run dev` / `npm start` bind `127.0.0.1` (localhost only).
+- LAN exposure (`dev:lan`/`start:lan`) is an explicit opt-in with **no application authentication**.

@@ -178,6 +178,56 @@ describe('upgrading a pre-migration (legacy) database', () => {
   });
 });
 
+describe('auto-migration guard (distinguishes fresh from existing databases)', () => {
+  it('allows auto-migration for an empty database (no user data at risk)', () => {
+    const fresh = new Database(':memory:');
+    const status = getMigrationStatus(fresh, MIGRATIONS);
+    expect(status.state).toBe('empty');
+    // Fresh databases may be initialized automatically.
+    const needsExplicit = status.state !== 'empty' && (status.pending.length > 0 || status.state === 'legacy-unversioned');
+    expect(needsExplicit).toBe(false);
+    fresh.close();
+  });
+
+  it('requires explicit migration for a legacy (pre-migration) database', () => {
+    const db = legacyFixture(path.join(tmp, 'legacy-guard.db'));
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.state).toBe('legacy-unversioned');
+    const needsExplicit = status.state !== 'empty' && (status.pending.length > 0 || status.state === 'legacy-unversioned');
+    expect(needsExplicit).toBe(true);
+    db.close();
+  });
+
+  it('requires explicit migration for a versioned database with pending migrations', () => {
+    const db = new Database(':memory:');
+    // Apply only the baseline, leaving later migrations pending.
+    const baseline = path.join(tmp, 'partial-drizzle');
+    fs.cpSync(MIGRATIONS, baseline, { recursive: true });
+    const journal = JSON.parse(fs.readFileSync(path.join(baseline, 'meta', '_journal.json'), 'utf8'));
+    journal.entries = [journal.entries[0]]; // keep only baseline
+    fs.writeFileSync(path.join(baseline, 'meta', '_journal.json'), JSON.stringify(journal));
+    applyMigrations(db, baseline);
+    // Now check against the FULL migrations folder (2 pending).
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.state).toBe('versioned');
+    expect(status.pending.length).toBeGreaterThan(0);
+    const needsExplicit = status.state !== 'empty' && (status.pending.length > 0 || status.state === 'legacy-unversioned');
+    expect(needsExplicit).toBe(true);
+    db.close();
+  });
+
+  it('does not require explicit migration for a fully-up-to-date versioned database', () => {
+    const db = new Database(':memory:');
+    applyMigrations(db, MIGRATIONS);
+    const status = getMigrationStatus(db, MIGRATIONS);
+    expect(status.state).toBe('versioned');
+    expect(status.pending).toHaveLength(0);
+    const needsExplicit = status.state !== 'empty' && (status.pending.length > 0 || status.state === 'legacy-unversioned');
+    expect(needsExplicit).toBe(false);
+    db.close();
+  });
+});
+
 describe('0002 SQL matches the documented legacy constants', () => {
   it('uses exactly the legacy and canonical values from string-order.ts', () => {
     const sql = fs.readFileSync(path.join(MIGRATIONS, '0002_canonical_banjo_string_order.sql'), 'utf8');
