@@ -20,6 +20,14 @@ import { getMigrationStatus, resolveMigrationsFolder } from '../../db/migrate';
 export const BACKUP_FORMAT = 'bxb-notebook-backup';
 export const BACKUP_FORMAT_VERSION = 1;
 export const BACKUP_DIR_PREFIX = 'bxb-backup-';
+/** Expected app.name in every manifest produced by this application. */
+export const BACKUP_APP_NAME = 'bxb-music-notebook';
+/** Expected database path inside every BxB backup directory. */
+export const BACKUP_DB_PATH = 'database/notebook.db';
+/** SHA-256 hex pattern (64 lowercase hex characters). */
+const SHA256_RE = /^[0-9a-f]{64}$/;
+/** Backup directory name pattern: bxb-backup-<ISO-like timestamp>[-optional-label]. */
+const BACKUP_DIR_NAME_RE = /^bxb-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d+Z/;
 
 export interface ManifestFile {
   path: string; // relative, POSIX separators
@@ -52,9 +60,9 @@ export function sha256File(filePath: string): Promise<string> {
 function appInfo(): { name: string; version: string } {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8'));
-    return { name: String(pkg.name ?? 'bxb-music-notebook'), version: String(pkg.version ?? 'unknown') };
+    return { name: String(pkg.name ?? BACKUP_APP_NAME), version: String(pkg.version ?? 'unknown') };
   } catch {
-    return { name: 'bxb-music-notebook', version: 'unknown' };
+    return { name: BACKUP_APP_NAME, version: 'unknown' };
   }
 }
 
@@ -243,49 +251,85 @@ export async function verifyBackup(dir: string, migrationsFolder: string = resol
 }
 
 /**
- * Returns true when `dir` contains a manifest.json that matches the expected BxB backup
- * format, version, and required fields. This is a lightweight "recognized format" check —
- * it does NOT verify file checksums (use verifyBackup for that). It is intentionally strict
- * so that foreign, malformed, or manually created lookalike directories are never eligible
- * for pruning by pruneBackups.
+ * Returns true when `dir` is a recognized-format BxB backup directory. This is a strict
+ * "recognized format" check — not a full checksum-verified check (use verifyBackup for
+ * that). A directory that passes this check can be listed and pruned; a directory that fails
+ * is treated as foreign and is never touched by retention commands.
  *
- * Required fields checked:
- *  - format === BACKUP_FORMAT
- *  - formatVersion is a number between 1 and BACKUP_FORMAT_VERSION (inclusive)
- *  - app.name is a non-empty string matching the expected app identifier
- *  - createdAt is a non-empty string
- *  - database is an object with a non-empty path string
- *  - media is an object with a files array
+ * Checks applied (recognition, not checksum verification):
+ *  1. Directory name matches the generated bxb-backup-<timestamp>[-label] convention.
+ *  2. manifest.json is a regular file (not a symlink or pipe).
+ *  3. format === BACKUP_FORMAT ('bxb-notebook-backup').
+ *  4. formatVersion is an integer in [1, BACKUP_FORMAT_VERSION].
+ *  5. app.name === BACKUP_APP_NAME ('bxb-music-notebook') — exact match.
+ *  6. createdAt is a non-empty string that parses as a valid ISO date.
+ *  7. database.path === BACKUP_DB_PATH ('database/notebook.db') — exact match.
+ *  8. The database file exists inside dir as a regular non-symlinked file.
+ *  9. database.bytes is a nonnegative finite integer.
+ * 10. database.sha256 is a 64-character lowercase hex string.
+ * 11. media.files is an array.
+ * 12. Every media file entry has: a safe relative path under 'media/', a nonnegative
+ *     finite integer byte count, and a valid SHA-256 hex value.
+ * 13. No manifest path escapes the candidate directory.
  */
 function isRecognizedBackupManifest(dir: string): boolean {
   try {
+    const resolvedDir = path.resolve(dir);
+
+    // 1. Directory name convention.
+    if (!BACKUP_DIR_NAME_RE.test(path.basename(dir))) return false;
+
+    // 2. manifest.json must be a regular file (not a symlink).
     const manifestPath = path.join(dir, 'manifest.json');
-    if (!fs.existsSync(manifestPath)) return false;
-    // Only accept regular files — no symlinks, pipes, etc.
-    const stat = fs.lstatSync(manifestPath);
-    if (!stat.isFile()) return false;
+    const mStat = fs.lstatSync(manifestPath); // throws if missing
+    if (!mStat.isFile()) return false;
+
     const raw = fs.readFileSync(manifestPath, 'utf8');
     const m = JSON.parse(raw) as {
       format?: unknown;
       formatVersion?: unknown;
       app?: { name?: unknown };
       createdAt?: unknown;
-      database?: { path?: unknown };
+      database?: { path?: unknown; bytes?: unknown; sha256?: unknown };
       media?: { files?: unknown };
     };
-    return (
-      m.format === BACKUP_FORMAT &&
-      typeof m.formatVersion === 'number' &&
-      Number.isInteger(m.formatVersion) &&
-      m.formatVersion >= 1 &&
-      m.formatVersion <= BACKUP_FORMAT_VERSION &&
-      typeof m.app?.name === 'string' && (m.app.name as string).length > 0 &&
-      typeof m.createdAt === 'string' && (m.createdAt as string).length > 0 &&
-      typeof m.database === 'object' && m.database !== null &&
-      typeof (m.database as { path?: unknown }).path === 'string' &&
-      typeof m.media === 'object' && m.media !== null &&
-      Array.isArray((m.media as { files?: unknown }).files)
-    );
+
+    // 3. format.
+    if (m.format !== BACKUP_FORMAT) return false;
+    // 4. formatVersion.
+    if (typeof m.formatVersion !== 'number' || !Number.isInteger(m.formatVersion) || m.formatVersion < 1 || m.formatVersion > BACKUP_FORMAT_VERSION) return false;
+    // 5. app.name — exact match only.
+    if (m.app?.name !== BACKUP_APP_NAME) return false;
+    // 6. createdAt — parseable ISO date.
+    if (typeof m.createdAt !== 'string' || m.createdAt.length === 0 || !Number.isFinite(Date.parse(m.createdAt))) return false;
+    // 7. database.path — exact match only.
+    if (m.database?.path !== BACKUP_DB_PATH) return false;
+    // 8. Database file must be a regular non-symlinked file inside dir.
+    const dbAbs = path.resolve(resolvedDir, ...BACKUP_DB_PATH.split('/'));
+    if (!dbAbs.startsWith(resolvedDir + path.sep)) return false; // escape guard
+    const dbStat = fs.lstatSync(dbAbs); // throws if missing
+    if (!dbStat.isFile()) return false; // rejects symlinks
+    // 9. database.bytes — nonneg finite integer.
+    const dbBytes = (m.database as { bytes?: unknown }).bytes;
+    if (typeof dbBytes !== 'number' || !Number.isFinite(dbBytes) || !Number.isInteger(dbBytes) || dbBytes < 0) return false;
+    // 10. database.sha256 — 64-char lowercase hex.
+    const dbHash = (m.database as { sha256?: unknown }).sha256;
+    if (typeof dbHash !== 'string' || !SHA256_RE.test(dbHash)) return false;
+    // 11. media.files — must be an array.
+    const files = (m.media as { files?: unknown })?.files;
+    if (!Array.isArray(files)) return false;
+    // 12. Each media entry: safe relative path, nonneg integer bytes, valid sha256.
+    for (const f of files as unknown[]) {
+      const fi = f as { path?: unknown; bytes?: unknown; sha256?: unknown };
+      if (typeof fi.path !== 'string') return false;
+      if (!fi.path.startsWith('media/')) return false;
+      // 13. No path escape.
+      const absMedia = path.resolve(resolvedDir, ...fi.path.split('/'));
+      if (!absMedia.startsWith(resolvedDir + path.sep)) return false;
+      if (typeof fi.bytes !== 'number' || !Number.isFinite(fi.bytes) || !Number.isInteger(fi.bytes) || fi.bytes < 0) return false;
+      if (typeof fi.sha256 !== 'string' || !SHA256_RE.test(fi.sha256)) return false;
+    }
+    return true;
   } catch {
     return false;
   }
