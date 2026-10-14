@@ -338,6 +338,70 @@ describe('listBackups strict manifest validation', () => {
     expect(listBackups(dirs.backupsDir)).toHaveLength(0);
   });
 
+  // ── P2 regression: directory-name pattern is fully anchored ──────────────────────────
+
+  it('excludes a lookalike directory whose name has a trailing .partial.saved suffix', () => {
+    // The old regex had no end-anchor, so "…Z.partial.saved" slipped past the name check.
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z.partial.saved', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory whose timestamp has four millisecond digits instead of three', () => {
+    // toISOString() always emits exactly 3 ms digits; 4 digits is a lookalike, not a real backup.
+    makeDir('bxb-backup-2026-01-01T00-00-00-0000Z', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('includes a directory whose name has a valid label suffix', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z-my-label', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('excludes a directory whose label segment uses a bare "Z" without a preceding hyphen', () => {
+    // "ZExtraStuff" must not be accepted as though it were a valid label separator.
+    makeDir('bxb-backup-2026-01-01T00-00-00-000ZExtraStuff', makeValidManifest(), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  // ── P2 regression: canonical ISO timestamp validation ────────────────────────────────
+
+  it('excludes a directory with a date-only createdAt (no time component)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a calendar-invalid createdAt (Feb 30)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-02-30T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a createdAt missing the millisecond field', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026-01-01T00:00:00Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a createdAt using forward slashes instead of hyphens', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({ createdAt: '2026/01/01T00:00:00.000Z' }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  // ── P2 regression: media path must stay strictly inside media/ subdirectory ─────────
+
+  it('excludes a media entry whose path traverses out of media/ via ..', () => {
+    // media/../database/notebook.db starts with "media/" but resolves to database/notebook.db.
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/../database/notebook.db', bytes: 4, sha256: VALID_SHA256 }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a media entry that navigates above the backup directory root', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-00-000Z', makeValidManifest({
+      media: { fileCount: 1, totalBytes: 4, files: [{ path: 'media/../../outside.db', bytes: 4, sha256: VALID_SHA256 }] },
+    }), true);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
   it('real backup produced by createBackup() is recognized', async () => {
     const live = openLive();
     insertMotif(live.db, 'motif-a', 'M-001', 'test');
