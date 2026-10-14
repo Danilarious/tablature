@@ -47,6 +47,12 @@ export function apiErrorResponse(error: unknown, context: string): NextResponse 
     return NextResponse.json({ error: error.message, ...(error.details ? { details: error.details } : {}) }, { status: error.status });
   }
   const code = (error as { code?: unknown })?.code;
+  if ((error as { name?: unknown })?.name === 'MigrationError') {
+    return NextResponse.json(
+      { error: 'The notebook database is unavailable (migration or maintenance in progress or failed). Check the server log for recovery steps.' },
+      { status: 503 }
+    );
+  }
   if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) {
     console.error(`[api:${context}] constraint violation`, error);
     return NextResponse.json({ error: 'The record conflicts with existing data (duplicate ID or missing reference).' }, { status: 409 });

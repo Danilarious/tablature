@@ -1,13 +1,13 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../db/schema';
-import { initializeTables } from '../db/client';
+import { applyMigrations, resolveMigrationsFolder } from '../db/migrate';
 
-/** Fresh in-memory database with the application schema (never touches real storage). */
+/** Fresh in-memory database built from the real migrations (never touches real storage). */
 export function createTestDb() {
   const sqlite = new Database(':memory:');
   sqlite.pragma('foreign_keys = ON');
-  initializeTables(sqlite);
+  applyMigrations(sqlite, resolveMigrationsFolder());
   const db = drizzle(sqlite, { schema });
   return { sqlite, db };
 }

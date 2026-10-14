@@ -1,45 +1,43 @@
-import fs from 'fs';
+/**
+ * Restore a complete backup created by `npm run backup`.
+ *
+ *   npm run restore -- <path-to-bxb-backup-folder>
+ *   npm run restore -- --latest
+ *
+ * Stop the app first: restore refuses while any process has the database open. The current
+ * data is always saved first as a "pre-restore" backup, the backup is validated in a staging
+ * folder, and the replaced files are kept in <dataDir>/.restore-<timestamp>/ (never deleted).
+ */
 import path from 'path';
 import { getStorageDirs } from '../app/lib/paths';
+import { listBackups } from '../app/lib/backup/backup';
+import { restoreBackup } from '../app/lib/backup/restore';
 
-export function runRestore(backupFilePath?: string) {
-  const { backupsDir, dbPath } = getStorageDirs();
+async function main() {
+  const { baseDir, dbPath, mediaDir, backupsDir } = getStorageDirs();
+  const rel = (p: string) => path.relative(baseDir, p) || p;
+  const target = process.argv[2];
 
-  let targetBackup = backupFilePath;
-
-  if (!targetBackup) {
-    // Pick the most recent backup in storage/backups/
-    const files = fs.readdirSync(backupsDir)
-      .filter(f => f.startsWith('notebook-backup-') && f.endsWith('.db'))
-      .sort()
-      .reverse();
-
-    if (files.length === 0) {
-      console.error('No database backups found in', backupsDir);
-      process.exit(1);
-    }
-
-    targetBackup = path.join(backupsDir, files[0]);
+  let backupDir: string | undefined;
+  if (target === '--latest') {
+    backupDir = listBackups(backupsDir).find((d) => !d.endsWith('-pre-restore'));
+  } else if (target) {
+    backupDir = path.resolve(target);
   }
-
-  if (!fs.existsSync(targetBackup)) {
-    console.error('Target backup file does not exist:', targetBackup);
+  if (!backupDir) {
+    console.error('Usage: npm run restore -- <backup-folder> | --latest');
+    console.error(`Available backups:\n  ${listBackups(backupsDir).map(rel).join('\n  ') || '(none)'}`);
     process.exit(1);
   }
 
-  // Make a pre-restore safety copy of current db if it exists
-  if (fs.existsSync(dbPath)) {
-    const safetyCopy = `${dbPath}.pre-restore-${Date.now()}.bak`;
-    fs.copyFileSync(dbPath, safetyCopy);
-    console.log(`Pre-restore safety copy saved to: ${safetyCopy}`);
-  }
-
-  // Restore the database
-  fs.copyFileSync(targetBackup, dbPath);
-  console.log(`✓ Database successfully restored from: ${targetBackup}`);
+  console.log(`Restoring from ${rel(backupDir)} ...`);
+  const result = await restoreBackup({ backupDir, baseDir, dbPath, mediaDir, backupsDir, log: (m) => console.log(`  ${m}`) });
+  console.log('✓ Restore finished.');
+  if (result.safetyBackupDir) console.log(`  Previous state backed up to ${rel(result.safetyBackupDir)}`);
+  console.log(`  Replaced files kept in ${rel(result.replacedDir)}`);
 }
 
-const arg = process.argv[2];
-if (require.main === module || process.argv[1]?.endsWith('restore.ts')) {
-  runRestore(arg);
-}
+main().catch((err) => {
+  console.error(`✗ Restore aborted: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+});

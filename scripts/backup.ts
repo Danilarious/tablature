@@ -1,45 +1,53 @@
-import fs from 'fs';
+/**
+ * Complete, WAL-safe disaster-recovery backup (database + all media + verified manifest).
+ *
+ *   npm run backup                         # create and verify a backup in <dataDir>/backups/
+ *   npm run backup -- --label=before-trip  # add a label to the folder name
+ *   npm run backup -- --keep=10            # OPT-IN retention: afterwards remove all but the 10
+ *                                          # newest complete backups (add --dry-run to preview)
+ *   npm run backup -- --verify=<dir>       # verify an existing backup folder only
+ *
+ * Nothing is deleted unless --keep is given. This is different from the JSON export
+ * (/api/export), which is a portable, human-readable data export without media files.
+ */
 import path from 'path';
 import { getStorageDirs } from '../app/lib/paths';
+import { createBackup, pruneBackups, verifyBackup } from '../app/lib/backup/backup';
 
-export function runBackup() {
-  const { databaseDir, mediaDir, backupsDir, dbPath } = getStorageDirs();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-
-  console.log(`Starting backup at ${new Date().toISOString()}...`);
-
-  // 1. Backup SQLite database file
-  if (fs.existsSync(dbPath)) {
-    const targetDbBackup = path.join(backupsDir, `notebook-backup-${timestamp}.db`);
-    fs.copyFileSync(dbPath, targetDbBackup);
-    console.log(`✓ SQLite database backed up to: ${targetDbBackup}`);
-  } else {
-    console.warn(`! Database file not found at ${dbPath}`);
-  }
-
-  // 2. Backup media files manifest
-  if (fs.existsSync(mediaDir)) {
-    const mediaFiles = fs.readdirSync(mediaDir).filter(f => !f.startsWith('.'));
-    const manifest = {
-      backupTimestamp: new Date().toISOString(),
-      fileCount: mediaFiles.length,
-      files: mediaFiles.map(f => {
-        const stat = fs.statSync(path.join(mediaDir, f));
-        return {
-          filename: f,
-          sizeBytes: stat.size,
-          modifiedAt: stat.mtime.toISOString(),
-        };
-      }),
-    };
-    const manifestPath = path.join(backupsDir, `media-manifest-${timestamp}.json`);
-    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-    console.log(`✓ Media manifest (${mediaFiles.length} files) saved to: ${manifestPath}`);
-  }
-
-  console.log('Backup completed successfully.');
+function arg(name: string): string | undefined {
+  const hit = process.argv.find((a) => a === `--${name}` || a.startsWith(`--${name}=`));
+  if (!hit) return undefined;
+  return hit.includes('=') ? hit.slice(hit.indexOf('=') + 1) : '';
 }
 
-if (require.main === module || process.argv[1]?.endsWith('backup.ts')) {
-  runBackup();
+async function main() {
+  const { dbPath, mediaDir, backupsDir, baseDir } = getStorageDirs();
+  const rel = (p: string) => path.relative(baseDir, p) || p;
+
+  const verifyDir = arg('verify');
+  if (verifyDir) {
+    const result = await verifyBackup(path.resolve(verifyDir));
+    console.log(result.ok ? '✓ Backup verified.' : `✗ Backup invalid:\n  - ${result.errors.join('\n  - ')}`);
+    process.exit(result.ok ? 0 : 1);
+  }
+
+  console.log('Creating backup (SQLite online backup API + media copy)...');
+  const { dir, manifest } = await createBackup({ dbPath, mediaDir, backupsDir, label: arg('label') || null });
+  console.log(`✓ Backup verified and saved: ${rel(dir)}`);
+  console.log(`  schema: ${manifest.schema.latestMigration ?? 'unversioned'}; app ${manifest.app.version}`);
+  console.log(`  database: ${manifest.database.bytes} bytes, integrity ${manifest.database.integrityCheck}`);
+  console.log(`  media: ${manifest.media.fileCount} files, ${manifest.media.totalBytes} bytes`);
+  for (const w of manifest.warnings) console.warn(`  ! ${w}`);
+
+  const keep = arg('keep');
+  if (keep !== undefined) {
+    const dryRun = arg('dry-run') !== undefined;
+    const removed = pruneBackups(backupsDir, Number(keep), dryRun);
+    console.log(`${dryRun ? 'Would remove' : 'Removed'} ${removed.length} older backup(s)${removed.length ? `: ${removed.map(rel).join(', ')}` : ''}.`);
+  }
 }
+
+main().catch((err) => {
+  console.error(`✗ Backup failed: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+});
