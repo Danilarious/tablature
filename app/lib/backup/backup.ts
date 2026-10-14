@@ -242,14 +242,85 @@ export async function verifyBackup(dir: string, migrationsFolder: string = resol
   return { ok: errors.length === 0, errors, manifest };
 }
 
-/** Complete backups in a directory, newest first (ignores .partial and foreign entries). */
+/**
+ * Returns true when `dir` contains a manifest.json that matches the expected BxB backup
+ * format, version, and required fields. This is a lightweight "recognized format" check —
+ * it does NOT verify file checksums (use verifyBackup for that). It is intentionally strict
+ * so that foreign, malformed, or manually created lookalike directories are never eligible
+ * for pruning by pruneBackups.
+ *
+ * Required fields checked:
+ *  - format === BACKUP_FORMAT
+ *  - formatVersion is a number between 1 and BACKUP_FORMAT_VERSION (inclusive)
+ *  - app.name is a non-empty string matching the expected app identifier
+ *  - createdAt is a non-empty string
+ *  - database is an object with a non-empty path string
+ *  - media is an object with a files array
+ */
+function isRecognizedBackupManifest(dir: string): boolean {
+  try {
+    const manifestPath = path.join(dir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) return false;
+    // Only accept regular files — no symlinks, pipes, etc.
+    const stat = fs.lstatSync(manifestPath);
+    if (!stat.isFile()) return false;
+    const raw = fs.readFileSync(manifestPath, 'utf8');
+    const m = JSON.parse(raw) as {
+      format?: unknown;
+      formatVersion?: unknown;
+      app?: { name?: unknown };
+      createdAt?: unknown;
+      database?: { path?: unknown };
+      media?: { files?: unknown };
+    };
+    return (
+      m.format === BACKUP_FORMAT &&
+      typeof m.formatVersion === 'number' &&
+      Number.isInteger(m.formatVersion) &&
+      m.formatVersion >= 1 &&
+      m.formatVersion <= BACKUP_FORMAT_VERSION &&
+      typeof m.app?.name === 'string' && (m.app.name as string).length > 0 &&
+      typeof m.createdAt === 'string' && (m.createdAt as string).length > 0 &&
+      typeof m.database === 'object' && m.database !== null &&
+      typeof (m.database as { path?: unknown }).path === 'string' &&
+      typeof m.media === 'object' && m.media !== null &&
+      Array.isArray((m.media as { files?: unknown }).files)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns recognized-format BxB backup directories in backupsDir, newest first.
+ *
+ * A directory qualifies when ALL of the following are true:
+ *  1. It is a real directory (not a symlink).
+ *  2. Its name starts with BACKUP_DIR_PREFIX and does not end with ".partial".
+ *  3. Its resolved path is strictly inside backupsDir (no path-traversal escape).
+ *  4. It contains a manifest.json that passes isRecognizedBackupManifest().
+ *
+ * This is intentionally a "recognized format" list — not a checksum-verified list.
+ * Foreign, malformed, incomplete, lookalike, and symlinked entries are excluded.
+ */
 export function listBackups(backupsDir: string): string[] {
   if (!fs.existsSync(backupsDir)) return [];
+  const resolvedBase = path.resolve(backupsDir);
   return fs
     .readdirSync(backupsDir, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && e.name.startsWith(BACKUP_DIR_PREFIX) && !e.name.endsWith('.partial'))
-    .filter((e) => fs.existsSync(path.join(backupsDir, e.name, 'manifest.json')))
-    .map((e) => path.join(backupsDir, e.name))
+    .filter((e) => {
+      // 1. Must be a real directory — isDirectory() returns false for symlinks.
+      if (!e.isDirectory()) return false;
+      // 2. Name conventions.
+      if (!e.name.startsWith(BACKUP_DIR_PREFIX)) return false;
+      if (e.name.endsWith('.partial')) return false;
+      // 3. Resolved path must be a direct child of backupsDir (no escape via ..).
+      const candidate = path.resolve(backupsDir, e.name);
+      if (path.dirname(candidate) !== resolvedBase) return false;
+      // 4. Manifest must be parseable and match the expected BxB backup format.
+      return isRecognizedBackupManifest(candidate);
+    })
+    .map((e) => path.resolve(backupsDir, e.name))
     .sort()
     .reverse();
 }

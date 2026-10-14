@@ -155,6 +155,37 @@ export interface ApplyResult {
   backupPath: string | null;
 }
 
+/**
+ * Returns a human-readable incompatibility reason if the database's applied migration
+ * journal cannot be reconciled with the local migration files, or null if compatible.
+ *
+ * Incompatible conditions (fail-closed; the database must not be migrated or opened):
+ *  - An applied row whose timestamp matches no local migration (divergent/unknown build).
+ *  - The latest applied timestamp is newer than the newest local migration (app is behind).
+ *  - An applied migration's file on disk was modified after it was applied.
+ *
+ * This is the single authoritative compatibility check, shared by applyMigrations() and the
+ * read-only CLI status/pending paths so all callers enforce the same rules consistently.
+ */
+export function migrationCompatibilityError(status: MigrationStatus): string | null {
+  const unmatched = status.applied.filter((a) => a.tag === null);
+  if (unmatched.length > 0) {
+    return (
+      `Database has applied migration row(s) not found in this app's migration journal ` +
+      `(timestamps: ${unmatched.map((a) => a.createdAt).join(', ')}). ` +
+      `This database may have been written by a different or divergent build.`
+    );
+  }
+  if (status.newerThanApp) {
+    return 'This database was written by a newer version of BxB Music Notebook. Update the app first.';
+  }
+  const tampered = status.applied.filter((a) => a.tag !== null && !a.hashMatches);
+  if (tampered.length > 0) {
+    return `Applied migration file(s) were modified after being applied: ${tampered.map((t) => t.tag).join(', ')}. Restore the original files.`;
+  }
+  return null;
+}
+
 export function applyMigrations(sqlite: Sqlite, folder: string = resolveMigrationsFolder(), opts: ApplyOptions = {}): ApplyResult {
   const log = opts.log ?? (() => {});
   const now = opts.now ?? (() => new Date());

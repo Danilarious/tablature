@@ -161,6 +161,120 @@ describe('retention', () => {
 });
 
 // ---------------------------------------------------------------------------
+// listBackups / pruneBackups strict validation (fix: backup pruning safety)
+// ---------------------------------------------------------------------------
+
+describe('listBackups strict manifest validation', () => {
+  function makeValidManifest(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      format: 'bxb-notebook-backup',
+      formatVersion: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      label: null,
+      app: { name: 'bxb-music-notebook', version: '0.1.0' },
+      schema: { appliedMigrations: [], latestMigration: null },
+      database: { path: 'database/notebook.db', bytes: 100, sha256: 'abc', integrityCheck: 'ok', tableCounts: {} },
+      media: { fileCount: 0, totalBytes: 0, files: [] },
+      warnings: [],
+      ...overrides,
+    });
+  }
+
+  function makeDir(name: string, manifestContent?: string | null) {
+    const d = path.join(dirs.backupsDir, name);
+    fs.mkdirSync(d, { recursive: true });
+    if (manifestContent !== undefined && manifestContent !== null) {
+      fs.writeFileSync(path.join(d, 'manifest.json'), manifestContent);
+    }
+    return d;
+  }
+
+  it('includes a directory with a valid BxB manifest', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest());
+    expect(listBackups(dirs.backupsDir)).toHaveLength(1);
+  });
+
+  it('excludes a directory with malformed (non-JSON) manifest', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', '{ not valid json');
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with no manifest.json at all', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z'); // no manifest
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with a missing required field (no app.name)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ app: { version: '0.1.0' } }));
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with the wrong format identifier (foreign app)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ format: 'other-backup-tool' }));
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with an unsupported format version (too new)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ formatVersion: 999 }));
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a directory with formatVersion 0 (below minimum)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest({ formatVersion: 0 }));
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a lookalike directory (only manifest.json, no database or media fields)', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', JSON.stringify({ format: 'bxb-notebook-backup', formatVersion: 1 }));
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('excludes a symlinked directory', () => {
+    const realDir = path.join(base, 'real-backup');
+    fs.mkdirSync(realDir, { recursive: true });
+    fs.writeFileSync(path.join(realDir, 'manifest.json'), makeValidManifest());
+    const symlinkDir = path.join(dirs.backupsDir, 'bxb-backup-2026-01-01T00-00-01-000Z');
+    fs.symlinkSync(realDir, symlinkDir);
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('dry-run pruning deletes nothing', () => {
+    makeDir('bxb-backup-2026-01-01T00-00-01-000Z', makeValidManifest());
+    makeDir('bxb-backup-2026-01-01T00-00-02-000Z', makeValidManifest());
+    expect(listBackups(dirs.backupsDir)).toHaveLength(2);
+    pruneBackups(dirs.backupsDir, 1, true); // dry run: keep 1, but delete nothing
+    expect(listBackups(dirs.backupsDir)).toHaveLength(2);
+  });
+
+  it('never targets a path outside backupsDir via directory name traversal', () => {
+    // A directory named '../../outside' should NOT appear in listBackups.
+    const escapeDir = path.join(dirs.backupsDir, 'bxb-backup-../../outside');
+    try {
+      fs.mkdirSync(escapeDir, { recursive: true });
+    } catch {
+      return; // OS won't create it — good
+    }
+    expect(listBackups(dirs.backupsDir)).toHaveLength(0);
+  });
+
+  it('unrelated files and directories in backupsDir remain untouched after pruning', async () => {
+    const unrelated = path.join(dirs.backupsDir, 'my-notes.txt');
+    fs.writeFileSync(unrelated, 'keep me');
+    const unrelatedDir = path.join(dirs.backupsDir, 'unrelated-folder');
+    fs.mkdirSync(unrelatedDir);
+    // Create two valid backups.
+    const live = openLive();
+    live.sqlite.close();
+    let t = Date.UTC(2026, 0, 1);
+    const now = () => new Date((t += 1000));
+    for (let i = 0; i < 2; i++) await createBackup({ ...dirs, now });
+    pruneBackups(dirs.backupsDir, 1); // removes the older of the two
+    expect(fs.existsSync(unrelated)).toBe(true);
+    expect(fs.existsSync(unrelatedDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Atomic restore/open coordination (fix A)
 // ---------------------------------------------------------------------------
 

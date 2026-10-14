@@ -72,6 +72,11 @@ else
     read -r answer
     if [ "$answer" != "migrate" ]; then echo "Cancelled; nothing was changed."; exit 3; fi
     npm run -s db:migrate || { echo "Migration failed; the app was not started. See messages above."; exit 3; }
+  elif [ "$status" -eq 11 ]; then
+    echo "The database is incompatible with this app version (unrecognized migration, modified"
+    echo "migration file, or database from a newer build). Run 'npm run db:status' for details."
+    echo "You may need to restore from a backup or update the app."
+    exit 3
   elif [ "$status" -ne 0 ]; then
     echo "Could not check the database schema; the app was not started."
     exit 3
