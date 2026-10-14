@@ -35,7 +35,9 @@ COPY --from=base /app/next.config.mjs ./next.config.mjs
 COPY --from=base /app/scripts ./scripts
 COPY --from=base /app/app/db ./app/db
 COPY --from=base /app/app/lib ./app/lib
-# Schema migrations: applied automatically at startup (after a pre-migration backup)
+# Schema migrations: a fresh/empty database is initialized automatically; an existing
+# database with pending migrations requires an explicit `npm run db:migrate` before start
+# (see README "Docker & NAS Deployment — Upgrading an existing deployment").
 COPY --from=base /app/drizzle ./drizzle
 
 # Expose port

@@ -181,9 +181,55 @@ Detailed architectural and design specifications are maintained in `docs/`:
 ## 7. Docker & NAS Deployment
 
 A `Dockerfile` and `docker-compose.yml` are provided. The image never contains your data (see `.dockerignore`); data lives in the mounted volume (`./storage` → `/data`).
+
+By default the compose file publishes the port on `127.0.0.1:3000` only. To reach it from other devices, change the mapping to `"3000:3000"` **only** on a trusted network, ideally reachable solely through a tailnet with restrictive ACLs; the app has no authentication.
+
+### Fresh deployment (no existing data)
+
+A completely new deployment initializes the database automatically on first start:
 ```bash
 docker compose up -d --build
 ```
-By default the compose file publishes the port on `127.0.0.1:3000` only. To reach it from other devices, change the mapping to `"3000:3000"` **only** on a trusted network, ideally reachable solely through a tailnet with restrictive ACLs; the app has no authentication. Migrations run automatically at container start (with a pre-migration copy in `/data/backups`). Run backups inside the container with `docker compose exec music-notebook npm run backup`, and stop the container before `npm run restore`.
+
+### Upgrading an existing deployment
+
+> [!IMPORTANT]
+> The app **does not run migrations automatically** on an existing database. Attempting to start a new container image against an existing data volume without migrating first will cause the API to return 503 until the migration is applied explicitly.
+
+Safe upgrade sequence for a mounted existing database:
+```bash
+# 1. Stop the running container
+docker compose down
+
+# 2. Build the updated image
+docker compose build
+
+# 3. Check migration status (read-only)
+docker compose run --rm music-notebook npx tsx scripts/db.ts status
+
+# 4. Apply pending migrations (creates a complete backup in /data/backups/ first)
+docker compose run --rm music-notebook npm run db:migrate
+
+# 5. Confirm migrations succeeded
+docker compose run --rm music-notebook npx tsx scripts/db.ts status
+
+# 6. Start the application normally
+docker compose up -d
+```
+
+If step 4 fails, the database is unchanged. The pre-migration backup is in `/data/backups/`.
+
+### Backups and restore (Docker)
+
+Run backups inside the container:
+```bash
+docker compose exec music-notebook npm run backup
+```
+Stop the container before restoring (restore refuses while the app has the database open):
+```bash
+docker compose down
+docker compose run --rm music-notebook npm run restore -- --latest
+docker compose up -d
+```
 
 SQLite must live on a local disk of the machine running the app (not an SMB/NFS share opened by several clients). The Docker/NAS setup has not yet been tested on specific NAS products.
