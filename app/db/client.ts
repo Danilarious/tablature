@@ -2,193 +2,83 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
 import { getStorageDirs } from '../lib/paths';
+import { applyMigrations, getMigrationStatus, MigrationError, resolveMigrationsFolder } from './migrate';
+import { claimOpenProcess } from './locks';
 
 let dbInstance: ReturnType<typeof drizzle<typeof schema>> | null = null;
 let sqliteRaw: InstanceType<typeof Database> | null = null;
 
+/**
+ * Opens the notebook database given explicit storage paths. Extracted for testability;
+ * production code should call getDatabase() which wraps this with the singleton pattern.
+ *
+ * Safety rules:
+ *  - A fresh/empty database is initialized from migrations automatically.
+ *  - An existing database with pending or legacy-unversioned migrations is NOT migrated
+ *    automatically. Throws MigrationError so the caller can return 503 with clear instructions.
+ *    Run `npm run db:migrate` (or `scripts/launch-app.sh`) to migrate safely with a backup.
+ *  - The open-process marker is written BEFORE SQLite is opened so that any concurrent
+ *    restore sees the marker and refuses (see app/db/locks.ts for the full protocol).
+ *  - Every failure path after claimOpenProcess() releases the marker immediately so a
+ *    failed open does not block a subsequent restore.
+ */
+export function openNotebookDatabase(opts: { dbPath: string; databaseDir: string; backupsDir: string }) {
+  let releaseMarker: (() => void) | null = null;
+  try {
+    releaseMarker = claimOpenProcess(opts.databaseDir);
+  } catch (err) {
+    throw new MigrationError((err as Error).message);
+  }
+
+  // SQLite constructor is inside the try block so a failure (permissions, corrupt file,
+  // dbPath is a directory, etc.) triggers the marker release in the catch handler.
+  let sqlite: InstanceType<typeof Database> | null = null;
+  try {
+    sqlite = new Database(opts.dbPath);
+    sqlite.pragma('journal_mode = WAL');
+    sqlite.pragma('foreign_keys = ON');
+    sqlite.pragma('busy_timeout = 5000');
+
+    const migFolder = resolveMigrationsFolder();
+    const status = getMigrationStatus(sqlite, migFolder);
+
+    // Refuse to silently migrate an existing database. A fresh/empty one is safe to init.
+    if (status.state !== 'empty' && (status.pending.length > 0 || status.state === 'legacy-unversioned')) {
+      throw new MigrationError(
+        'This database has pending schema migrations. ' +
+          'Run `npm run db:migrate` (or use `scripts/launch-app.sh`) to apply them safely with a backup first. ' +
+          `(${status.pending.length} migration(s) pending${status.state === 'legacy-unversioned' ? '; legacy database adoption required' : ''})`
+      );
+    }
+
+    const result = applyMigrations(sqlite, migFolder, {
+      backupDir: opts.backupsDir,
+      log: (msg) => console.log(`[db] ${msg}`),
+    });
+    if (result.applied.length > 0 || result.adoptedLegacy) {
+      console.log(`[db] Schema up to date${result.backupPath ? ' (pre-migration backup saved in backups/)' : ''}.`);
+    }
+  } catch (err) {
+    sqlite?.close();
+    releaseMarker?.(); // Remove the marker — open failed, this process is not using the DB.
+    releaseMarker = null;
+    if (err instanceof MigrationError) console.error(`[db] ${err.message}`);
+    throw err;
+  }
+
+  // Marker stays for the lifetime of the process (exit handler registered by claimOpenProcess).
+  return { db: drizzle(sqlite!, { schema }), sqlite: sqlite! };
+}
+
+/** Returns the process-wide singleton database connection, opening it on first call. */
 export function getDatabase() {
   if (dbInstance) {
     return { db: dbInstance, sqlite: sqliteRaw! };
   }
 
-  const { dbPath } = getStorageDirs();
-  sqliteRaw = new Database(dbPath);
-  
-  // Pragmas for reliability and performance
-  sqliteRaw.pragma('journal_mode = WAL');
-  sqliteRaw.pragma('foreign_keys = ON');
-
-  // Auto-initialize tables if not already present
-  initializeTables(sqliteRaw);
-
-  dbInstance = drizzle(sqliteRaw, { schema });
+  const { dbPath, databaseDir, backupsDir } = getStorageDirs();
+  const result = openNotebookDatabase({ dbPath, databaseDir, backupsDir });
+  sqliteRaw = result.sqlite;
+  dbInstance = result.db;
   return { db: dbInstance, sqlite: sqliteRaw };
-}
-
-function initializeTables(sqlite: InstanceType<typeof Database>) {
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS instruments (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      maker TEXT,
-      model TEXT,
-      family TEXT NOT NULL,
-      string_count INTEGER NOT NULL,
-      default_scale_length REAL,
-      scale_length_unit TEXT DEFAULT 'in' NOT NULL,
-      per_string_speaking_lengths TEXT,
-      notes TEXT,
-      is_archived INTEGER DEFAULT 0 NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS string_products (
-      id TEXT PRIMARY KEY,
-      manufacturer TEXT NOT NULL,
-      product_family TEXT,
-      nominal_gauge REAL NOT NULL,
-      gauge_unit TEXT DEFAULT 'in' NOT NULL,
-      material TEXT,
-      core_construction TEXT,
-      winding_construction TEXT,
-      unit_weight REAL,
-      notes TEXT,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS string_sets (
-      id TEXT PRIMARY KEY,
-      instrument_id TEXT REFERENCES instruments(id),
-      name TEXT NOT NULL,
-      installed_date TEXT,
-      string_assignments TEXT NOT NULL,
-      notes TEXT,
-      is_active INTEGER DEFAULT 1 NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS tunings (
-      id TEXT PRIMARY KEY,
-      human_id TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL,
-      string_count INTEGER NOT NULL,
-      pitches TEXT NOT NULL,
-      tonal_center TEXT,
-      tags TEXT,
-      notes TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS capo_configurations (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      type TEXT NOT NULL,
-      string_frets TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS setups (
-      id TEXT PRIMARY KEY,
-      instrument_id TEXT REFERENCES instruments(id),
-      tuning_id TEXT REFERENCES tunings(id),
-      string_set_id TEXT REFERENCES string_sets(id),
-      capo_config_id TEXT REFERENCES capo_configurations(id),
-      name TEXT,
-      effective_pitches TEXT NOT NULL,
-      per_string_tension TEXT,
-      total_tension REAL,
-      snapshot TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS positions (
-      id TEXT PRIMARY KEY,
-      human_id TEXT,
-      name TEXT,
-      tuning_id TEXT REFERENCES tunings(id),
-      setup_id TEXT REFERENCES setups(id),
-      string_count INTEGER NOT NULL,
-      base_fret INTEGER DEFAULT 1 NOT NULL,
-      frets TEXT NOT NULL,
-      fingers TEXT,
-      tags TEXT,
-      notes TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS motifs (
-      id TEXT PRIMARY KEY,
-      human_id TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL,
-      setup_id TEXT REFERENCES setups(id),
-      tuning_id TEXT REFERENCES tunings(id),
-      instrument_id TEXT REFERENCES instruments(id),
-      function TEXT,
-      tab_data TEXT NOT NULL,
-      variations TEXT,
-      tags TEXT,
-      notes TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS compositions (
-      id TEXT PRIMARY KEY,
-      human_id TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      status TEXT DEFAULT 'idea' NOT NULL,
-      tonal_center TEXT,
-      tempo INTEGER,
-      tempo_notes TEXT,
-      piece_map TEXT,
-      sections TEXT,
-      notes TEXT,
-      lyrics TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS composition_motifs (
-      id TEXT PRIMARY KEY,
-      composition_id TEXT NOT NULL REFERENCES compositions(id) ON DELETE CASCADE,
-      motif_id TEXT NOT NULL REFERENCES motifs(id) ON DELETE CASCADE,
-      sort_order INTEGER DEFAULT 0 NOT NULL,
-      section_name TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS composition_positions (
-      id TEXT PRIMARY KEY,
-      composition_id TEXT NOT NULL REFERENCES compositions(id) ON DELETE CASCADE,
-      position_id TEXT NOT NULL REFERENCES positions(id) ON DELETE CASCADE,
-      sort_order INTEGER DEFAULT 0 NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS composition_setups (
-      id TEXT PRIMARY KEY,
-      composition_id TEXT NOT NULL REFERENCES compositions(id) ON DELETE CASCADE,
-      setup_id TEXT NOT NULL REFERENCES setups(id) ON DELETE CASCADE,
-      instrument_role TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS motif_positions (
-      id TEXT PRIMARY KEY,
-      motif_id TEXT NOT NULL REFERENCES motifs(id) ON DELETE CASCADE,
-      position_id TEXT NOT NULL REFERENCES positions(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS attachments (
-      id TEXT PRIMARY KEY,
-      parent_type TEXT NOT NULL,
-      parent_id TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      file_path TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      file_size INTEGER NOT NULL,
-      description TEXT,
-      created_at INTEGER NOT NULL
-    );
-  `);
 }

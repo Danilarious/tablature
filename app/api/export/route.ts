@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { apiErrorResponse } from '@/app/lib/api/http';
 import { getDatabase } from '@/app/db/client';
 import {
   instruments,
@@ -17,6 +18,9 @@ import {
   attachments,
 } from '@/app/db/schema';
 import { eq } from 'drizzle-orm';
+
+// Reads request.url and live database state; never prerender.
+export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   try {
@@ -159,7 +163,7 @@ export async function GET(req: Request) {
     }
 
     return NextResponse.json({ error: 'Invalid export parameters' }, { status: 400 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return apiErrorResponse(error, "export");
   }
 }

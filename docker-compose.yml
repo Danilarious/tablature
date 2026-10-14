@@ -8,7 +8,10 @@ services:
     container_name: bxb-music-notebook
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Default: reachable only from this host. There is NO application login.
+      # For LAN/NAS access, replace with "3000:3000" ONLY on a trusted network, ideally behind
+      # a VPN/tailnet with restrictive ACLs (see README "Network access").
+      - "127.0.0.1:3000:3000"
     environment:
       - NODE_ENV=production
       - MUSIC_NOTEBOOK_DATA_DIR=/data

@@ -121,14 +121,14 @@ describe('BxB Music Notebook Acceptance Tests', () => {
     db = drizzle(sqlite, { schema });
   });
 
-  it('preserves reentrant tuning order for 5-string banjo', async () => {
+  it('preserves reentrant tuning order for 5-string banjo (canonical physical order)', async () => {
     const banjoTuning = {
       id: 't-banjo',
       humanId: 'T-007',
       name: 'Banjo Open G',
       stringCount: 5,
-      // String 5 is high g4 on the short peg
-      pitches: JSON.stringify(['D4', 'B3', 'G3', 'D3', 'g4']),
+      // Canonical: index 0 = physical 5th string (short thumb string, reentrant high G4)
+      pitches: JSON.stringify(['G4', 'D3', 'G3', 'B3', 'D4']),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -138,7 +138,8 @@ describe('BxB Music Notebook Acceptance Tests', () => {
     const pitches: string[] = JSON.parse(fetched.pitches);
 
     expect(pitches.length).toBe(5);
-    expect(pitches[4]).toBe('g4'); // Reentrant pitch preserved at exact position
+    expect(pitches[0]).toBe('G4'); // Reentrant pitch stays at its physical (bass-side) position
+    expect(pitches[4]).toBe('D4'); // Physical 1st string
   });
 
   it('applies full capo uniformly and partial capo selectively', () => {
@@ -160,9 +161,10 @@ describe('BxB Music Notebook Acceptance Tests', () => {
   });
 
   it('supports per-string scale-length override for 5-string banjo short 5th string', () => {
-    const perStringLengths = [26.25, 26.25, 26.25, 26.25, 19.75];
-    const pitches = ['D4', 'B3', 'G3', 'D3', 'G4'];
-    const banjoUnitWeights = [0.0000178, 0.0000242, 0.0000350, 0.0000780, 0.0000178];
+    // Canonical order: index 0 = physical 5th string (short), indexes 1-4 full length.
+    const perStringLengths = [19.75, 26.25, 26.25, 26.25, 26.25];
+    const pitches = ['G4', 'D3', 'G3', 'B3', 'D4'];
+    const banjoUnitWeights = [0.0000178, 0.000078, 0.000035, 0.0000242, 0.0000178];
 
     const calc = calculateStringLabTensions(
       pitches.map((p, idx) => ({
@@ -175,9 +177,11 @@ describe('BxB Music Notebook Acceptance Tests', () => {
     );
 
     expect(calc.hasIncompleteData).toBe(false);
-    expect(calc.strings[4].scaleLength).toBe(19.75); // Shorter speaking length
-    expect(calc.strings[4].tension.tensionLbs).toBeGreaterThan(9.0);
-    expect(calc.strings[4].tension.tensionLbs).toBeLessThan(15.0);
+    expect(calc.strings[0].openPitch).toBe('G4');
+    expect(calc.strings[0].scaleLength).toBe(19.75); // Shorter speaking length on the reentrant 5th
+    expect(calc.strings[0].tension.tensionLbs).toBeGreaterThan(9.0);
+    expect(calc.strings[0].tension.tensionLbs).toBeLessThan(15.0);
+    expect(calc.strings[4].scaleLength).toBe(26.25);
   });
 
   it('guarantees setup snapshot immutability when instrument or strings are modified later', async () => {

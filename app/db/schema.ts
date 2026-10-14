@@ -31,6 +31,12 @@ export const stringProducts = sqliteTable('string_products', {
   unitWeight: real('unit_weight'), // lbs/inch (e.g. 0.0000221)
   notes: text('notes'),
   createdAt: integer('created_at').notNull(),
+  // Provenance (all nullable: unknown stays unknown; never fabricate)
+  catalogId: text('catalog_id'), // manufacturer part / catalog number, e.g. "PB053"
+  unitWeightSource: text('unit_weight_source'), // 'manufacturer_chart' | 'measured' | 'third_party' | 'unknown'
+  sourceNote: text('source_note'),
+  sourceUrl: text('source_url'),
+  verifiedAt: text('verified_at'), // ISO date the unit weight was last checked against the source
 });
 
 // 3. String Sets
@@ -137,30 +143,30 @@ export const compositions = sqliteTable('compositions', {
 // Join tables
 export const compositionMotifs = sqliteTable('composition_motifs', {
   id: text('id').primaryKey(),
-  compositionId: text('composition_id').references(() => compositions.id).notNull(),
-  motifId: text('motif_id').references(() => motifs.id).notNull(),
+  compositionId: text('composition_id').references(() => compositions.id, { onDelete: 'cascade' }).notNull(),
+  motifId: text('motif_id').references(() => motifs.id, { onDelete: 'cascade' }).notNull(),
   sortOrder: integer('sort_order').default(0).notNull(),
   sectionName: text('section_name'),
 });
 
 export const compositionPositions = sqliteTable('composition_positions', {
   id: text('id').primaryKey(),
-  compositionId: text('composition_id').references(() => compositions.id).notNull(),
-  positionId: text('position_id').references(() => positions.id).notNull(),
+  compositionId: text('composition_id').references(() => compositions.id, { onDelete: 'cascade' }).notNull(),
+  positionId: text('position_id').references(() => positions.id, { onDelete: 'cascade' }).notNull(),
   sortOrder: integer('sort_order').default(0).notNull(),
 });
 
 export const compositionSetups = sqliteTable('composition_setups', {
   id: text('id').primaryKey(),
-  compositionId: text('composition_id').references(() => compositions.id).notNull(),
-  setupId: text('setup_id').references(() => setups.id).notNull(),
+  compositionId: text('composition_id').references(() => compositions.id, { onDelete: 'cascade' }).notNull(),
+  setupId: text('setup_id').references(() => setups.id, { onDelete: 'cascade' }).notNull(),
   instrumentRole: text('instrument_role'), // e.g. "Lead guitar", "Drone banjo", "Rhythm 7-string"
 });
 
 export const motifPositions = sqliteTable('motif_positions', {
   id: text('id').primaryKey(),
-  motifId: text('motif_id').references(() => motifs.id).notNull(),
-  positionId: text('position_id').references(() => positions.id).notNull(),
+  motifId: text('motif_id').references(() => motifs.id, { onDelete: 'cascade' }).notNull(),
+  positionId: text('position_id').references(() => positions.id, { onDelete: 'cascade' }).notNull(),
 });
 
 // Attachments
@@ -174,4 +180,18 @@ export const attachments = sqliteTable('attachments', {
   fileSize: integer('file_size').notNull(),
   description: text('description'),
   createdAt: integer('created_at').notNull(),
+});
+
+// Review flags: records a migration or validator could not safely transform automatically.
+// Flagged records are preserved unchanged; the flag explains what a human should verify.
+export const reviewFlags = sqliteTable('review_flags', {
+  id: text('id').primaryKey(),
+  entityType: text('entity_type').notNull(), // 'tuning' | 'instrument' | 'motif' | ...
+  entityId: text('entity_id').notNull(),
+  flagType: text('flag_type').notNull(), // e.g. 'string_order_needs_review', 'legacy_seed_migrated'
+  message: text('message').notNull(),
+  details: text('details'), // JSON
+  status: text('status').default('open').notNull(), // 'open' | 'resolved' | 'info'
+  createdAt: integer('created_at').notNull(),
+  resolvedAt: integer('resolved_at'),
 });

@@ -1,0 +1,18 @@
+# Keep private data and local artifacts out of Docker build contexts and images.
+storage/
+imports/
+exports/
+.restore-*
+*.db
+*.db-wal
+*.db-shm
+*.bak
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+.git/
+coverage/
+*.log
+.DS_Store

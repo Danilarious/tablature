@@ -3,6 +3,7 @@ import { getDatabase } from '@/app/db/client';
 import { motifs, setups, tunings, instruments } from '@/app/db/schema';
 import { eq } from 'drizzle-orm';
 import TabGrid from '@/app/components/TabGrid';
+import PrintButton from '@/app/components/PrintButton';
 import { notFound } from 'next/navigation';
 
 export default async function PrintMotifPage({ params }: { params: { id: string } }) {
@@ -36,15 +37,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
           <span className="font-bold text-stone-900 block">US LETTER MOTIF RECORD PREVIEW</span>
           <span className="text-stone-500">8.5" × 11" Portrait • 0.5" live margins</span>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            if (typeof window !== 'undefined') window.print();
-          }}
-          className="px-4 py-2 bg-stone-900 text-stone-50 font-bold rounded shadow hover:bg-stone-800"
-        >
-          PRINT MOTIF (PDF)
-        </button>
+        <PrintButton label="PRINT MOTIF (PDF)" />
       </div>
 
       {/* Printable Master Page */}
@@ -96,11 +89,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
               stringCount={stringCount}
               pitches={pitches}
               columns={tabCols}
-              activeColumnIndex={-1}
-              onSelectColumn={() => {}}
-              onUpdateColumn={() => {}}
-              onAddColumn={() => {}}
-              onDeleteColumn={() => {}}
+              readOnly
             />
           </div>
         </div>
@@ -118,11 +107,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
                   stringCount={stringCount}
                   pitches={pitches}
                   columns={v.tabData || []}
-                  activeColumnIndex={-1}
-                  onSelectColumn={() => {}}
-                  onUpdateColumn={() => {}}
-                  onAddColumn={() => {}}
-                  onDeleteColumn={() => {}}
+                  readOnly
                 />
               </div>
             ))

@@ -30,12 +30,17 @@ yarn-error.log*
 
 # Private Local Storage & Runtime Data
 # Note: Directory structure is preserved via .gitkeep
+storage/*
+!storage/database/
+!storage/media/
+!storage/backups/
 storage/database/*
 !storage/database/.gitkeep
 storage/media/*
 !storage/media/.gitkeep
 storage/backups/*
 !storage/backups/.gitkeep
+.restore-*
 imports/*
 !imports/.gitkeep
 exports/*
@@ -56,3 +61,4 @@ exports/*
 *.m4a
 *.mov
 *.mp4
+*.tsbuildinfo

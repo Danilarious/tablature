@@ -2,8 +2,19 @@
 
 import React, { useState, useEffect } from 'react';
 import { Sliders, AlertCircle, CheckCircle2, Search, ArrowRight, BookOpen, Layers } from 'lucide-react';
-import { calculateStringLabTensions, rankCandidatesForTargetTension, CatalogProduct } from '@/app/lib/music/string-lab';
-import { calculateSoundingPitch } from '@/app/lib/music/pitch';
+import { calculateStringLabTensions, rankCandidatesForTargetTension, resolveSpeakingLength, CatalogProduct } from '@/app/lib/music/string-lab';
+import { fetchJson } from '@/app/lib/api/client';
+import { filterCompatibleTunings, pickCompatibleTuningId } from '@/app/lib/music/compatibility';
+import { physicalStringNumber } from '@/app/lib/music/string-order';
+
+function safeJsonArray<T = unknown>(raw: unknown): T[] | null {
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed) ? (parsed as T[]) : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function StringLabPage() {
   const [instruments, setInstruments] = useState<any[]>([]);
@@ -27,17 +38,16 @@ export default function StringLabPage() {
   // Candidate recommendation modal state
   const [modalStringIndex, setModalStringIndex] = useState<number | null>(null);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   useEffect(() => {
     async function loadData() {
       try {
-        const [instRes, tunRes, prodRes] = await Promise.all([
-          fetch('/api/instruments'),
-          fetch('/api/tunings'),
-          fetch('/api/string-products'),
+        const [insts, tuns, prods] = await Promise.all([
+          fetchJson<any[]>('/api/instruments'),
+          fetchJson<any[]>('/api/tunings'),
+          fetchJson<CatalogProduct[]>('/api/string-products'),
         ]);
-        const insts = await instRes.json();
-        const tuns = await tunRes.json();
-        const prods = await prodRes.json();
 
         setInstruments(insts);
         setTunings(tuns);
@@ -45,15 +55,12 @@ export default function StringLabPage() {
 
         if (insts.length > 0) {
           setSelectedInstrumentId(insts[0].id);
-          if (insts[0].defaultScaleLength) {
-            setCustomScaleLength(insts[0].defaultScaleLength);
-          }
+          setCustomScaleLength(insts[0].defaultScaleLength ?? '');
+          setSelectedTuningId(pickCompatibleTuningId(tuns, insts[0].stringCount, null));
         }
-        if (tuns.length > 0) {
-          setSelectedTuningId(tuns[0].id);
-        }
-      } catch (err) {
+      } catch (err: any) {
         console.error(err);
+        setLoadError(err?.message ?? 'Failed to load String Lab data.');
       } finally {
         setLoading(false);
       }
@@ -62,14 +69,16 @@ export default function StringLabPage() {
   }, []);
 
   const currentInstrument = instruments.find((i) => i.id === selectedInstrumentId);
-  const currentTuning = tunings.find((t) => t.id === selectedTuningId);
+  const stringCount: number = currentInstrument?.stringCount || 6;
+  const compatibleTunings = filterCompatibleTunings(tunings, stringCount);
+  // Only a tuning whose string count matches the instrument is ever used.
+  const currentTuning = compatibleTunings.find((t) => t.id === selectedTuningId);
+  const tuningPitches = safeJsonArray<string>(currentTuning?.pitches) ?? [];
+  const pitches: string[] = tuningPitches.length === stringCount ? tuningPitches : [];
 
-  const stringCount = currentInstrument?.stringCount || currentTuning?.stringCount || 6;
-  const pitches: string[] = currentTuning?.pitches ? JSON.parse(currentTuning.pitches) : ['E2', 'A2', 'D3', 'G3', 'B3', 'E4'];
-
-  const perStringSpeakingLengths = currentInstrument?.perStringSpeakingLengths
-    ? JSON.parse(currentInstrument.perStringSpeakingLengths)
-    : null;
+  const perStringSpeakingLengths = safeJsonArray<number | null>(currentInstrument?.perStringSpeakingLengths);
+  // "Scale length" field = default for strings without a per-string override.
+  const defaultScaleForCalc = customScaleLength !== '' ? customScaleLength : currentInstrument?.defaultScaleLength ?? null;
 
   // Initialize or match string assignments
   useEffect(() => {
@@ -86,16 +95,15 @@ export default function StringLabPage() {
   }, [stringCount, stringProducts]);
 
   // Compute live tensions using domain module
-  const calculationInputs = pitches.slice(0, stringCount).map((p, idx) => {
+  const calculationInputs = pitches.map((p, idx) => {
     const assigned = stringAssignments[idx];
     const product = stringProducts.find((sp) => sp.id === assigned?.productId);
-    const scale = perStringSpeakingLengths?.[idx] ?? (customScaleLength !== '' ? customScaleLength : currentInstrument?.defaultScaleLength);
 
     return {
       stringIndex: idx,
       openPitch: p,
       capoFret: capoFret > 0 ? capoFret : null,
-      scaleLength: scale || null,
+      scaleLength: resolveSpeakingLength(idx, defaultScaleForCalc, perStringSpeakingLengths),
       stringProductId: product?.id,
       gauge: product?.nominalGauge,
       unitWeight: assigned?.overrideWeight ?? product?.unitWeight ?? null,
@@ -129,9 +137,11 @@ export default function StringLabPage() {
           <select
             value={selectedInstrumentId}
             onChange={(e) => {
-              setSelectedInstrumentId(e.target.value);
               const inst = instruments.find((i) => i.id === e.target.value);
-              if (inst?.defaultScaleLength) setCustomScaleLength(inst.defaultScaleLength);
+              if (!inst) return;
+              setSelectedInstrumentId(inst.id);
+              setCustomScaleLength(inst.defaultScaleLength ?? '');
+              setSelectedTuningId(pickCompatibleTuningId(tunings, inst.stringCount, selectedTuningId));
             }}
             className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5 text-xs"
           >
@@ -144,13 +154,14 @@ export default function StringLabPage() {
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-stone-600 font-bold uppercase">TUNING</label>
+          <label className="text-[11px] text-stone-600 font-bold uppercase">TUNING ({stringCount}-STRING)</label>
           <select
-            value={selectedTuningId}
+            value={currentTuning ? selectedTuningId : ''}
             onChange={(e) => setSelectedTuningId(e.target.value)}
             className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5 text-xs"
           >
-            {tunings.map((tun) => (
+            {!currentTuning && <option value="">— No {stringCount}-string tuning —</option>}
+            {compatibleTunings.map((tun) => (
               <option key={tun.id} value={tun.id}>
                 {tun.humanId} — {tun.name}
               </option>
@@ -159,12 +170,16 @@ export default function StringLabPage() {
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-stone-600 font-bold uppercase">SCALE LENGTH (INCHES)</label>
+          <label className="text-[11px] text-stone-600 font-bold uppercase" title="Used for strings without a per-string speaking-length override">DEFAULT SCALE LENGTH (IN)</label>
           <input
             type="number"
             step="0.1"
+            min="0"
             value={customScaleLength}
-            onChange={(e) => setCustomScaleLength(e.target.value ? parseFloat(e.target.value) : '')}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setCustomScaleLength(Number.isFinite(v) && v > 0 ? v : '');
+            }}
             placeholder="Scale length"
             className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5 text-xs font-bold"
           />
@@ -184,8 +199,18 @@ export default function StringLabPage() {
             <option value={4}>Fret 4</option>
             <option value={5}>Fret 5</option>
           </select>
+          <p className="text-[10px] text-stone-500">Capo changes sounding pitch only; tension uses the open pitch at full length.</p>
         </div>
       </div>
+
+      {loadError && (
+        <div className="p-3 bg-red-50 border border-red-300 rounded font-mono text-xs text-red-800">{loadError}</div>
+      )}
+      {!loading && !currentTuning && (
+        <div className="p-3 bg-amber-50 border border-amber-300 rounded font-mono text-xs text-amber-900">
+          No {stringCount}-string tuning is selected. Choose or create a tuning with exactly {stringCount} pitches.
+        </div>
+      )}
 
       {/* Target Tension Slider / Config */}
       <div className="flex flex-col sm:flex-row items-center justify-between p-3 bg-stone-50 border border-stone-300 rounded font-mono text-xs gap-3">
@@ -245,21 +270,30 @@ export default function StringLabPage() {
                 return (
                   <tr key={idx} className="hover:bg-stone-50 transition-colors">
                     <td className="py-3 px-3 font-bold text-stone-900">
-                      String #{idx + 1}
+                      S{physicalStringNumber(idx, calculation.strings.length)}
+                      {idx === 0 && <span className="block text-[10px] font-normal text-stone-400">bass side</span>}
                     </td>
 
                     <td className="py-3 px-3">
                       <span className="font-bold">{str.openPitch}</span>
+                      <span className="text-[10px] text-stone-400 block">open (tension basis)</span>
                       {str.capoFret && str.capoFret > 0 && (
                         <span className="text-[11px] text-amber-700 block">
-                          → {str.soundingPitch} (Capo {str.capoFret})
+                          → sounds {str.soundingPitch} (Capo {str.capoFret})
                         </span>
                       )}
                     </td>
 
                     <td className="py-3 px-3">
                       {str.scaleLength ? (
-                        <span>{str.scaleLength}"</span>
+                        <span>
+                          {str.scaleLength}"
+                          {str.capoFret && str.capoFret > 0 && str.effectiveVibratingLength !== null && (
+                            <span className="text-[10px] text-stone-500 block">
+                              vibrating {str.effectiveVibratingLength.toFixed(2)}" above capo
+                            </span>
+                          )}
+                        </span>
                       ) : (
                         <span className="text-amber-700 italic">Unknown</span>
                       )}
@@ -358,7 +392,7 @@ export default function StringLabPage() {
           <div className="bg-white border border-stone-300 rounded shadow-2xl max-w-lg w-full p-5 space-y-4 font-mono text-xs">
             <div className="flex items-center justify-between border-b border-stone-200 pb-2">
               <span className="font-bold tracking-wider text-stone-900 uppercase">
-                RECOMMENDED STRING PRODUCTS (STRING #{modalStringIndex + 1})
+                RECOMMENDED STRING PRODUCTS (S{physicalStringNumber(modalStringIndex, calculation.strings.length)})
               </span>
               <button
                 type="button"
@@ -370,14 +404,18 @@ export default function StringLabPage() {
             </div>
 
             <p className="text-[11px] text-stone-600">
-              Ranked by distance from target tension ({targetTension} lbs) at pitch{' '}
-              <span className="font-bold text-stone-900">{pitches[modalStringIndex]}</span>:
+              Ranked by distance from target tension ({targetTension} lbs) at open pitch{' '}
+              <span className="font-bold text-stone-900">{pitches[modalStringIndex]}</span> over{' '}
+              <span className="font-bold text-stone-900">
+                {calculation.strings[modalStringIndex]?.scaleLength ?? 'unknown'}"
+              </span>{' '}
+              (this string's speaking length):
             </p>
 
             <div className="max-h-64 overflow-y-auto divide-y divide-stone-200 border border-stone-200 rounded">
               {rankCandidatesForTargetTension(
                 pitches[modalStringIndex],
-                customScaleLength !== '' ? (customScaleLength as number) : 25.5,
+                calculation.strings[modalStringIndex]?.scaleLength ?? null,
                 targetTension,
                 stringProducts
               ).map((cand) => (

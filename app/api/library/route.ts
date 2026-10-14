@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { apiErrorResponse } from '@/app/lib/api/http';
 import { getDatabase } from '@/app/db/client';
 import {
   compositions,
@@ -14,6 +15,9 @@ import {
   attachments,
 } from '@/app/db/schema';
 import { eq, like, or } from 'drizzle-orm';
+
+// Reads request.url and live database state; never prerender.
+export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   try {
@@ -145,7 +149,7 @@ export async function GET(req: Request) {
       positions: filteredPositions,
       attachments: allAttachments,
     });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return apiErrorResponse(error, "library");
   }
 }

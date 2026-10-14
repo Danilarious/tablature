@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { apiErrorResponse } from '@/app/lib/api/http';
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase } from '@/app/db/client';
 import { compositions, compositionMotifs, compositionPositions, compositionSetups } from '@/app/db/schema';
@@ -22,8 +23,8 @@ export async function GET() {
     const { db } = getDatabase();
     const rows = await db.select().from(compositions).orderBy(desc(compositions.createdAt));
     return NextResponse.json(rows);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return apiErrorResponse(error, "compositions");
   }
 }
 
@@ -46,7 +47,10 @@ export async function POST(req: Request) {
       title,
       status: body.status || 'idea',
       tonalCenter: body.tonalCenter ? body.tonalCenter.trim() : null,
-      tempo: body.tempo ? parseInt(body.tempo, 10) : null,
+      tempo: (() => {
+        const t = typeof body.tempo === 'number' ? body.tempo : parseInt(String(body.tempo ?? ''), 10);
+        return Number.isFinite(t) && t > 0 && t < 1000 ? Math.round(t) : null;
+      })(),
       tempoNotes: body.tempoNotes ? body.tempoNotes.trim() : null,
       pieceMap: body.pieceMap ? body.pieceMap.trim() : null,
       sections: body.sections ? (typeof body.sections === 'string' ? body.sections : JSON.stringify(body.sections)) : null,
@@ -96,7 +100,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json(newComposition, { status: 201 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return apiErrorResponse(error, "compositions");
   }
 }
