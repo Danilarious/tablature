@@ -220,23 +220,14 @@ export function applyMigrations(sqlite: Sqlite, folder: string = resolveMigratio
   const migrations = loadMigrations(folder);
   const before = getMigrationStatus(sqlite, folder);
 
-  // Reject every applied row that cannot be matched to a known local migration, regardless
-  // of its timestamp. A null tag means the row came from a divergent or unknown build; the
-  // pending-migration inference would otherwise silently open or migrate an unknown schema.
-  const unmatched = before.applied.filter((a) => a.tag === null);
-  if (unmatched.length > 0) {
-    throw new MigrationError(
-      `Database has applied migration row(s) not found in this app's migration journal ` +
-        `(timestamps: ${unmatched.map((a) => a.createdAt).join(', ')}). ` +
-        `This database may have been written by a different or divergent build; nothing was changed.`
-    );
-  }
-  if (before.newerThanApp) {
-    throw new MigrationError('This database was written by a newer version of BxB Music Notebook. Update the app; nothing was changed.');
-  }
-  const tampered = before.applied.filter((a) => a.tag && !a.hashMatches);
-  if (tampered.length > 0) {
-    throw new MigrationError(`Applied migration file(s) were modified after being applied: ${tampered.map((t) => t.tag).join(', ')}. Restore the original files; nothing was changed.`);
+  // Single authoritative compatibility gate — delegates to migrationCompatibilityError()
+  // which covers unmatched rows, newer-than-app, journal gaps, and tampered files.
+  // Using the shared function here ensures that applyMigrations() (the application path
+  // through openNotebookDatabase) enforces exactly the same rules as the CLI path; without
+  // this, a gapped journal detected by db:pending would still allow the app to open.
+  const compatError = migrationCompatibilityError(before);
+  if (compatError) {
+    throw new MigrationError(`${compatError} Nothing was changed.`);
   }
   if (before.state === 'legacy-unversioned') {
     const problems = verifyLegacySchema(sqlite, folder);
@@ -263,6 +254,9 @@ export function applyMigrations(sqlite: Sqlite, folder: string = resolveMigratio
   try {
     // Re-read inside the write lock: another process may have migrated meanwhile.
     const inTx = getMigrationStatus(sqlite, folder);
+    // Repeat the full compatibility check inside the lock; state may have changed.
+    const inTxCompatError = migrationCompatibilityError(inTx);
+    if (inTxCompatError) throw new MigrationError(inTxCompatError);
     sqlite.exec(`CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`);
     const record = sqlite.prepare(`INSERT INTO ${MIGRATIONS_TABLE} (hash, created_at) VALUES (?, ?)`);
     if (inTx.state === 'legacy-unversioned') {
