@@ -430,12 +430,15 @@ export default function QuickCapturePage() {
     resetCaptureFields();
   };
 
+  const guardPendingMediaNavigation = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!hasUnuploadedMedia(pendingMedia)) return;
+    event.preventDefault();
+    window.alert('Please wait for media to finish attaching, or retry the failed upload, before leaving this capture. The recording or file is still held only on this page.');
+  };
+
   const handleTuningNavigation = (event: React.MouseEvent<HTMLAnchorElement>) => {
-    if (hasUnuploadedMedia(pendingMedia)) {
-      event.preventDefault();
-      window.alert('Save this idea before leaving to edit tunings. Kept recordings and files remain only in this capture until the idea is saved.');
-      return;
-    }
+    guardPendingMediaNavigation(event);
+    if (event.defaultPrevented) return;
     saveDraft(browserStorage(), { ...currentDraft, savedAt: Date.now() });
   };
 
@@ -517,16 +520,25 @@ export default function QuickCapturePage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <Link href="/library" className="underline text-emerald-800 hover:text-emerald-950 font-semibold">
+            <Link
+              href="/library"
+              onClick={guardPendingMediaNavigation}
+              className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
+            >
               Library
             </Link>
             {savedCapture?.composition && (
-              <Link href="/compositions" className="underline text-emerald-800 hover:text-emerald-950 font-semibold">
+              <Link
+                href="/compositions"
+                onClick={guardPendingMediaNavigation}
+                className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
+              >
                 Compositions
               </Link>
             )}
             <Link
               href={`/print/motif/${savedMotif.id}`}
+              onClick={guardPendingMediaNavigation}
               className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
             >
               Print Record
