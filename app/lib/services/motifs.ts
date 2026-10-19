@@ -60,6 +60,17 @@ function resolveMotifStringCount(db: SyncDb, input: MotifInput): number | null {
     if (input.tuningId && s.tuningId && s.tuningId !== input.tuningId) {
       throw new HttpError(400, 'Setup uses a different tuning.');
     }
+
+    if (s.instrumentId) {
+      const setupInstrument = db.select().from(instruments).where(eq(instruments.id, s.instrumentId)).get();
+      if (!setupInstrument) throw new HttpError(422, 'Setup references a missing instrument.');
+      instCount = setupInstrument.stringCount;
+    }
+    if (s.tuningId) {
+      const setupTuning = db.select().from(tunings).where(eq(tunings.id, s.tuningId)).get();
+      if (!setupTuning) throw new HttpError(422, 'Setup references a missing tuning.');
+      tunCount = setupTuning.stringCount;
+    }
   }
   if (instCount !== null && tunCount !== null) assertInstrumentTuningCompatible(instCount, tunCount);
   return instCount ?? tunCount;
