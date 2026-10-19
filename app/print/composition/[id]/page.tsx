@@ -68,7 +68,7 @@ export default async function PrintCompositionPage({ params }: { params: { id: s
         <div className="border-b-2 technical-rule pb-3 flex items-start justify-between">
           <div>
             <div className="text-[10px] tracking-widest text-stone-600 uppercase">
-              BxB Music Notebook • {stringCount}-String Composition Record
+              BxB Music Notebook • Composition Record
             </div>
             <h1 className="font-serif font-bold text-2xl text-black mt-1">
               {comp.title}
@@ -124,7 +124,7 @@ export default async function PrintCompositionPage({ params }: { params: { id: s
                     key={pos.id}
                     humanId={pos.humanId}
                     name={pos.name}
-                    stringCount={stringCount}
+                    stringCount={pos.stringCount || stringCount}
                     baseFret={pos.baseFret}
                     frets={frets}
                     fingers={fingers}
@@ -159,15 +159,28 @@ export default async function PrintCompositionPage({ params }: { params: { id: s
           {linkedMotifRecords.length > 0 ? (
             linkedMotifRecords.map((m: any) => {
               const tabCols = m.tabData ? JSON.parse(m.tabData) : [];
+              const motifSetup = m.setupId ? setupMap.get(m.setupId) : null;
+              const motifInstrument = (m.instrumentId ? instMap.get(m.instrumentId) : null)
+                || (motifSetup?.instrumentId ? instMap.get(motifSetup.instrumentId) : null)
+                || instrument;
+              const motifTuning = (m.tuningId ? tunMap.get(m.tuningId) : null)
+                || (motifSetup?.tuningId ? tunMap.get(motifSetup.tuningId) : null)
+                || tuning;
+              const motifStringCount = motifInstrument?.stringCount || motifTuning?.stringCount || stringCount;
+              const motifPitches = motifTuning?.pitches
+                ? JSON.parse(motifTuning.pitches)
+                : Array(motifStringCount).fill('?');
               return (
                 <div key={m.id} className="border technical-rule p-3 space-y-2">
-                  <div className="flex items-center justify-between border-b technical-rule pb-1">
+                  <div className="flex items-center justify-between border-b technical-rule pb-1 gap-3">
                     <span className="font-bold">{m.humanId} — {m.name}</span>
-                    <span className="text-[10px] uppercase text-stone-600">{m.function}</span>
+                    <span className="text-[10px] uppercase text-stone-600 text-right">
+                      {m.function} · {motifInstrument?.name || `${motifStringCount}-string`} · {motifTuning?.name || 'Unknown tuning'}
+                    </span>
                   </div>
                   <PrintableTablature
-                    stringCount={stringCount}
-                    pitches={pitches}
+                    stringCount={motifStringCount}
+                    pitches={motifPitches}
                     columns={tabCols}
                   />
                 </div>
