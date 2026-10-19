@@ -17,12 +17,14 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
     ? await db.select().from(setups).where(eq(setups.id, motif.setupId))
     : [null];
 
-  const [tuning] = motif.tuningId
-    ? await db.select().from(tunings).where(eq(tunings.id, motif.tuningId))
+  const resolvedTuningId = motif.tuningId || setup?.tuningId;
+  const [tuning] = resolvedTuningId
+    ? await db.select().from(tunings).where(eq(tunings.id, resolvedTuningId))
     : [null];
 
-  const [instrument] = motif.instrumentId
-    ? await db.select().from(instruments).where(eq(instruments.id, motif.instrumentId))
+  const resolvedInstrumentId = motif.instrumentId || setup?.instrumentId;
+  const [instrument] = resolvedInstrumentId
+    ? await db.select().from(instruments).where(eq(instruments.id, resolvedInstrumentId))
     : [null];
 
   const [capo] = setup?.capoConfigId
