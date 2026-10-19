@@ -21,11 +21,13 @@ export interface AudioRecorderProps {
    * so it can be attached once the real record ID exists.
    */
   onCapture?: (media: CapturedMedia) => void;
+  /** Reports a live or stopped-but-not-kept recording so parent navigation can protect it. */
+  onTransientMediaChange?: (hasTransientMedia: boolean) => void;
 }
 
 const ACCEPT = 'audio/*,.webm,.ogg,.mp3,.m4a,.wav,.flac,.aif,.aiff,.pdf,.png,.jpg,.jpeg';
 
-export default function AudioRecorder({ parentType, parentId, onUploaded, onCapture }: AudioRecorderProps) {
+export default function AudioRecorder({ parentType, parentId, onUploaded, onCapture, onTransientMediaChange }: AudioRecorderProps) {
   const pendingMode = typeof onCapture === 'function';
   const canUploadNow = !pendingMode && !!parentId;
 
@@ -55,6 +57,10 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
     };
   }, [audioUrl]);
 
+  useEffect(() => {
+    onTransientMediaChange?.(isRecording || audioBlob !== null);
+  }, [audioBlob, isRecording, onTransientMediaChange]);
+
   const startRecording = async () => {
     try {
       setStatus(null);
@@ -83,6 +89,7 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
         const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
         setAudioBlob(blob);
         setAudioUrl(URL.createObjectURL(blob));
+        setIsRecording(false);
         stream.getTracks().forEach((track) => track.stop());
       };
 
@@ -96,9 +103,8 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
+    if (mediaRecorderRef.current && isRecording && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
-      setIsRecording(false);
     }
   };
 

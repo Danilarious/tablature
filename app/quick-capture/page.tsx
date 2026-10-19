@@ -54,6 +54,7 @@ export default function QuickCapturePage() {
   const [instruments, setInstruments] = useState<any[]>([]);
   const [tunings, setTunings] = useState<any[]>([]);
   const [compositions, setCompositions] = useState<any[]>([]);
+  const [compositionLoadWarning, setCompositionLoadWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Selected Instrument & Tuning
@@ -96,6 +97,7 @@ export default function QuickCapturePage() {
   // Media recorded/selected before the motif exists; uploaded only against the real motif ID.
   const [pendingMedia, setPendingMedia] = useState<PendingMediaItem[]>([]);
   const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [recorderHasTransientMedia, setRecorderHasTransientMedia] = useState(false);
 
   // Draft recovery (localStorage). Autosave starts only after the initial restore attempt.
   const [draftHydrated, setDraftHydrated] = useState(false);
@@ -106,11 +108,18 @@ export default function QuickCapturePage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [instData, tunData, compData] = await Promise.all([
+        const [instData, tunData] = await Promise.all([
           fetchJson<any[]>('/api/instruments'),
           fetchJson<any[]>('/api/tunings'),
-          fetchJson<any[]>('/api/compositions'),
         ]);
+        let compData: any[] = [];
+        let compositionLoadFailed = false;
+        try {
+          compData = await fetchJson<any[]>('/api/compositions');
+        } catch (compositionError) {
+          compositionLoadFailed = true;
+          setCompositionLoadWarning(`Compositions could not be loaded. Motif Inbox and New Song remain available: ${compositionError instanceof Error ? compositionError.message : 'unknown error'}`);
+        }
 
         setInstruments(instData);
         setTunings(tunData);
@@ -139,7 +148,13 @@ export default function QuickCapturePage() {
           setFretboardMap(plan.fretboardMap);
           setTempo(draft.tempo ?? '');
           setTimeSignature(draft.timeSignature);
-          setCompositionMode(draft.compositionMode);
+          const restoreWarnings = [...plan.warnings];
+          if (draft.compositionMode === 'existing' && compositionLoadFailed) {
+            setCompositionMode('inbox');
+            restoreWarnings.push('The saved Existing Song destination could not be restored because compositions are temporarily unavailable.');
+          } else {
+            setCompositionMode(draft.compositionMode);
+          }
           setSelectedCompositionId(draft.compositionId || compData[0]?.id || '');
           setNewCompositionTitle(draft.newCompositionTitle);
           setSectionName(draft.sectionName);
@@ -147,9 +162,9 @@ export default function QuickCapturePage() {
           setMotifFunction(draft.motifFunction);
           setMotifTags(draft.tags);
           setMotifNotes(draft.notes);
-          setDraftNotice({ savedAt: draft.savedAt, warnings: plan.warnings });
+          setDraftNotice({ savedAt: draft.savedAt, warnings: restoreWarnings });
           // If anything could not be restored, leave the stored draft untouched until the user acts.
-          lastPersistedDraft.current = plan.warnings.length > 0 ? 'locked' : null;
+          lastPersistedDraft.current = restoreWarnings.length > 0 ? 'locked' : null;
         }
       } catch (err) {
         setError(`Failed to load initial data: ${err instanceof Error ? err.message : 'unknown error'}`);
@@ -229,8 +244,9 @@ export default function QuickCapturePage() {
     return () => window.clearTimeout(handle);
   }, [draftKey, draftHydrated, savedCapture]);
 
-  // Warn before leaving with unsaved work or media that has not reached the server.
-  const needsLeaveWarning = hasUnsavedDraft || hasUnuploadedMedia(pendingMedia);
+  // Warn before leaving with unsaved work, a live/unkept recording, or media not yet on the server.
+  const hasMediaAtRisk = recorderHasTransientMedia || hasUnuploadedMedia(pendingMedia);
+  const needsLeaveWarning = hasUnsavedDraft || hasMediaAtRisk;
   useEffect(() => {
     if (!needsLeaveWarning) return;
     const handler = (e: BeforeUnloadEvent) => {
@@ -328,6 +344,10 @@ export default function QuickCapturePage() {
 
   const handleSaveCapture = async () => {
     if (savedCapture) return; // already saved; use "Capture Another Part" to continue
+    if (recorderHasTransientMedia) {
+      setError('Keep or discard the current recording before saving this idea.');
+      return;
+    }
     if (!selectedInstrumentId || !currentTuning) {
       setError(`Please select an instrument and a ${stringCount}-string tuning.`);
       return;
@@ -421,8 +441,8 @@ export default function QuickCapturePage() {
   };
 
   const handleStartNewCapture = () => {
-    if (hasUnuploadedMedia(pendingMedia)) {
-      const ok = window.confirm('Some media has not been attached to the saved idea yet. Starting a new capture will drop it. Continue?');
+    if (hasMediaAtRisk) {
+      const ok = window.confirm('A recording or file has not been safely attached yet. Starting a new capture will drop it. Continue?');
       if (!ok) return;
     }
     setSavedCapture(null);
@@ -431,9 +451,9 @@ export default function QuickCapturePage() {
   };
 
   const guardPendingMediaNavigation = (event: React.MouseEvent<HTMLAnchorElement>) => {
-    if (!hasUnuploadedMedia(pendingMedia)) return;
+    if (!hasMediaAtRisk) return;
     event.preventDefault();
-    window.alert('Please wait for media to finish attaching, or retry the failed upload, before leaving this capture. The recording or file is still held only on this page.');
+    window.alert('Keep or discard the current recording, wait for media to finish attaching, or retry the failed upload before leaving. The recording or file is still held only on this page.');
   };
 
   const handleTuningNavigation = (event: React.MouseEvent<HTMLAnchorElement>) => {
@@ -600,6 +620,13 @@ export default function QuickCapturePage() {
         </div>
       )}
 
+      {compositionLoadWarning && (
+        <div className="p-3 bg-amber-50 border border-amber-300 rounded flex items-center gap-2 text-xs font-mono text-amber-900">
+          <AlertCircle className="w-4 h-4 text-amber-700 flex-shrink-0" />
+          <span>{compositionLoadWarning}</span>
+        </div>
+      )}
+
       {/* Physical Setup Bar: Instrument, Tuning, Capo */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-paper-100 border border-stone-300 rounded font-mono text-xs">
         {/* Instrument Selector */}
@@ -758,8 +785,9 @@ export default function QuickCapturePage() {
               <button
                 key={value}
                 type="button"
+                disabled={value === 'existing' && (compositionLoadWarning !== null || compositions.length === 0)}
                 onClick={() => setCompositionMode(value)}
-                className={`px-2 py-2 border rounded ${compositionMode === value ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300'}`}
+                className={`px-2 py-2 border rounded disabled:opacity-40 disabled:cursor-not-allowed ${compositionMode === value ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300'}`}
               >
                 {label}
               </button>
@@ -917,10 +945,18 @@ export default function QuickCapturePage() {
         <div>
           {savedMotif ? (
             // After saving, new recordings attach directly to the real motif.
-            <AudioRecorder parentType="motif" parentId={savedMotif.id} />
+            <AudioRecorder
+              parentType="motif"
+              parentId={savedMotif.id}
+              onTransientMediaChange={setRecorderHasTransientMedia}
+            />
           ) : (
             // Before saving, recordings stay pending in the browser until the motif exists.
-            <AudioRecorder parentType="motif" onCapture={handleCapturedMedia} />
+            <AudioRecorder
+              parentType="motif"
+              onCapture={handleCapturedMedia}
+              onTransientMediaChange={setRecorderHasTransientMedia}
+            />
           )}
         </div>
       </div>

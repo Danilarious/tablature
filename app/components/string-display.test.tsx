@@ -151,6 +151,10 @@ describe('TAB input and fretboard clicks reference the same canonical string ind
     expect(restGlyph('1/16')).toBe('𝄿');
     expect(restGlyph('dotted 1/4')).toBe('𝄽·');
     expect(restGlyph('triplet 1/8')).toBe('𝄾₃');
+    expect(restGlyph('quarter')).toBe('𝄽');
+    expect(restGlyph('eighth')).toBe('𝄾');
+    expect(restGlyph('dotted-quarter')).toBe('𝄽·');
+    expect(restGlyph('triplet-eighth')).toBe('𝄾₃');
     expect(restGlyph(null)).toBe('R');
   });
 

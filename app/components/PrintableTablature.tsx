@@ -23,21 +23,28 @@ function boundaryStyle(barline: TabBarline | null | undefined): React.CSSPropert
   return { borderRight: '1px solid #e7e5e4' };
 }
 
-export function restGlyph(duration: TabColumn['duration']): string {
+export function restGlyph(duration: string | null | undefined): string {
   switch (duration) {
     case '1':
+    case 'whole':
       return '𝄻';
     case '1/2':
+    case 'half':
       return '𝄼';
     case '1/4':
+    case 'quarter':
       return '𝄽';
     case '1/8':
+    case 'eighth':
       return '𝄾';
     case '1/16':
+    case 'sixteenth':
       return '𝄿';
     case 'dotted 1/4':
+    case 'dotted-quarter':
       return '𝄽·';
     case 'triplet 1/8':
+    case 'triplet-eighth':
       return '𝄾₃';
     default:
       return 'R';
