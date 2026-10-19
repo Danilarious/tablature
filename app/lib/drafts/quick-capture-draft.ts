@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { tabDataSchema } from '../validation/schemas';
+import { fretboardMapSchema, tabDataSchema, timeSignatureSchema } from '../validation/schemas';
 
 /**
  * Unsaved Quick Capture draft, persisted in localStorage so a refresh or accidental
@@ -18,10 +18,18 @@ export const quickCaptureDraftSchema = z.object({
   customCapoFrets: z.array(z.number().int().min(0).max(24).nullable()).max(12),
   tabColumns: tabDataSchema,
   activeColumnIndex: z.number().int().min(0),
+  fretboardMode: z.enum(['map', 'tab']).default('map'),
+  fretboardMap: fretboardMapSchema.default([]),
   title: z.string().max(300),
   motifFunction: z.string().max(40),
   tags: z.string().max(2000),
   notes: z.string().max(10_000),
+  tempo: z.number().int().min(20).max(400).nullable().default(null),
+  timeSignature: timeSignatureSchema.default('free'),
+  compositionMode: z.enum(['inbox', 'existing', 'new']).default('inbox'),
+  compositionId: z.string().max(100).default(''),
+  newCompositionTitle: z.string().max(300).default(''),
+  sectionName: z.string().max(200).default(''),
 });
 export type QuickCaptureDraft = z.infer<typeof quickCaptureDraftSchema>;
 
@@ -32,8 +40,8 @@ export interface StorageLike {
 }
 
 /** A draft worth keeping has musical content or text (selection changes alone are not saved). */
-export function draftHasContent(d: Pick<QuickCaptureDraft, 'tabColumns' | 'title' | 'tags' | 'notes'>): boolean {
-  return d.title.trim() !== '' || d.tags.trim() !== '' || d.notes.trim() !== '' || d.tabColumns.some((c) => c.notes.length > 0 || !!c.technique || !!c.duration || !!c.rest);
+export function draftHasContent(d: Pick<QuickCaptureDraft, 'tabColumns' | 'fretboardMap' | 'title' | 'tags' | 'notes'>): boolean {
+  return d.title.trim() !== '' || d.tags.trim() !== '' || d.notes.trim() !== '' || d.fretboardMap.length > 0 || d.tabColumns.some((c) => c.notes.length > 0 || !!c.technique || !!c.duration || !!c.rest || !!c.barlineAfter || c.kind === 'grace');
 }
 
 export function parseDraft(raw: string | null | undefined): QuickCaptureDraft | null {
@@ -87,6 +95,8 @@ export interface DraftRestorePlan {
   tabColumns: QuickCaptureDraft['tabColumns'] | null;
   /** Custom capo frets are restored only when they match the restored string count. */
   customCapoFrets: (number | null)[];
+  /** Independent fretboard-map notes are restored only when they fit the instrument. */
+  fretboardMap: QuickCaptureDraft['fretboardMap'];
   warnings: string[];
 }
 
@@ -114,11 +124,14 @@ export function resolveDraftRestore(
   }
   const tabFits = draft.tabColumns.every((c) => c.notes.every((n) => n.stringIndex < inst!.stringCount));
   if (!tabFits) warnings.push('The draft TAB does not fit the selected instrument and was not restored.');
+  const mapFits = draft.fretboardMap.every((n) => n.stringIndex < inst!.stringCount);
+  if (!mapFits) warnings.push('The draft fretboard map does not fit the selected instrument and was not restored.');
   return {
     instrumentId: inst.id,
     tuningId,
     tabColumns: tabFits ? draft.tabColumns : null,
     customCapoFrets: draft.customCapoFrets.length === inst.stringCount ? draft.customCapoFrets : [],
+    fretboardMap: mapFits ? draft.fretboardMap : [],
     warnings,
   };
 }

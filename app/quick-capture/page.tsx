@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import FretboardEditor from '@/app/components/FretboardEditor';
+import FretboardEditor, { FretboardMode, FretboardNote } from '@/app/components/FretboardEditor';
 import TabGrid, { TabColumn } from '@/app/components/TabGrid';
 import AudioRecorder, { CapturedMedia } from '@/app/components/AudioRecorder';
 import { Check, AlertCircle, Save, Guitar, Radio, RotateCcw, Trash2 } from 'lucide-react';
@@ -35,8 +35,11 @@ function browserStorage(): Storage | null {
 
 interface SavedCapture {
   motif: { id: string; humanId: string; name: string };
+  composition: { id: string; humanId: string; title: string } | null;
   setupReused: boolean;
 }
+
+type CompositionMode = 'inbox' | 'existing' | 'new';
 
 function safePitchArray(raw: unknown): string[] {
   try {
@@ -50,6 +53,7 @@ function safePitchArray(raw: unknown): string[] {
 export default function QuickCapturePage() {
   const [instruments, setInstruments] = useState<any[]>([]);
   const [tunings, setTunings] = useState<any[]>([]);
+  const [compositions, setCompositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Selected Instrument & Tuning
@@ -66,10 +70,22 @@ export default function QuickCapturePage() {
   const [motifFunction, setMotifFunction] = useState<string>('riff');
   const [motifTags, setMotifTags] = useState<string>('');
   const [motifNotes, setMotifNotes] = useState<string>('');
+  const [tempo, setTempo] = useState<number | ''>('');
+  const [timeSignature, setTimeSignature] = useState<string>('free');
 
-  // Tab & Fretboard state
+  // Composition destination can be selected before saving.
+  const [compositionMode, setCompositionMode] = useState<CompositionMode>('inbox');
+  const [selectedCompositionId, setSelectedCompositionId] = useState<string>('');
+  const [newCompositionTitle, setNewCompositionTitle] = useState<string>('');
+  const [sectionName, setSectionName] = useState<string>('');
+
+  // TAB event entry and an independent, multi-position fretboard map.
   const [tabColumns, setTabColumns] = useState<TabColumn[]>(EMPTY_COLUMNS);
   const [activeColumnIndex, setActiveColumnIndex] = useState<number>(0);
+  const [fretboardMode, setFretboardMode] = useState<FretboardMode>('map');
+  const [fretboardMap, setFretboardMap] = useState<FretboardNote[]>([]);
+  const tapTimes = useRef<number[]>([]);
+  const [tapActive, setTapActive] = useState(false);
 
   // Saved result feedback
   const [savedCapture, setSavedCapture] = useState<SavedCapture | null>(null);
@@ -90,13 +106,16 @@ export default function QuickCapturePage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [instData, tunData] = await Promise.all([
+        const [instData, tunData, compData] = await Promise.all([
           fetchJson<any[]>('/api/instruments'),
           fetchJson<any[]>('/api/tunings'),
+          fetchJson<any[]>('/api/compositions'),
         ]);
 
         setInstruments(instData);
         setTunings(tunData);
+        setCompositions(compData);
+        if (compData.length > 0) setSelectedCompositionId(compData[0].id);
 
         if (instData.length > 0) {
           setSelectedInstrumentId(instData[0].id);
@@ -116,6 +135,14 @@ export default function QuickCapturePage() {
             setTabColumns(plan.tabColumns as TabColumn[]);
             setActiveColumnIndex(Math.min(draft.activeColumnIndex, plan.tabColumns.length - 1));
           }
+          setFretboardMode(draft.fretboardMode);
+          setFretboardMap(plan.fretboardMap);
+          setTempo(draft.tempo ?? '');
+          setTimeSignature(draft.timeSignature);
+          setCompositionMode(draft.compositionMode);
+          setSelectedCompositionId(draft.compositionId || compData[0]?.id || '');
+          setNewCompositionTitle(draft.newCompositionTitle);
+          setSectionName(draft.sectionName);
           setMotifName(draft.title);
           setMotifFunction(draft.motifFunction);
           setMotifTags(draft.tags);
@@ -144,12 +171,13 @@ export default function QuickCapturePage() {
   const handleInstrumentChange = (instrumentId: string) => {
     const nextInst = instruments.find(i => i.id === instrumentId);
     if (!nextInst) return;
-    if (nextInst.stringCount !== stringCount && tabHasNotes(tabColumns)) {
+    if (nextInst.stringCount !== stringCount && (tabHasNotes(tabColumns) || fretboardMap.length > 0)) {
       const ok = window.confirm(
-        `Switching to a ${nextInst.stringCount}-string instrument clears the TAB entered for ${stringCount} strings (string indexes would no longer refer to the same physical strings). Continue?`
+        `Switching to a ${nextInst.stringCount}-string instrument clears the TAB and fretboard map entered for ${stringCount} strings. Continue?`
       );
       if (!ok) return;
       setTabColumns(tabColumns.map(c => ({ ...c, notes: [] })));
+      setFretboardMap([]);
     }
     setSelectedInstrumentId(instrumentId);
     setSelectedTuningId(pickCompatibleTuningId(tunings, nextInst.stringCount, selectedTuningId));
@@ -168,6 +196,14 @@ export default function QuickCapturePage() {
     customCapoFrets,
     tabColumns,
     activeColumnIndex,
+    fretboardMode,
+    fretboardMap,
+    tempo: tempo === '' ? null : tempo,
+    timeSignature,
+    compositionMode,
+    compositionId: selectedCompositionId,
+    newCompositionTitle,
+    sectionName,
     title: motifName,
     motifFunction,
     tags: motifTags,
@@ -254,10 +290,54 @@ export default function QuickCapturePage() {
     setTabColumns(updatedCols);
   };
 
+  const handleMapNoteClick = (stringIndex: number, fret: number) => {
+    setFretboardMap((current) => {
+      const exists = current.some((note) => note.stringIndex === stringIndex && note.fret === fret);
+      return exists
+        ? current.filter((note) => !(note.stringIndex === stringIndex && note.fret === fret))
+        : [...current, { stringIndex, fret }];
+    });
+  };
+
+  const registerTempoTap = () => {
+    const now = performance.now();
+    const recent = tapTimes.current;
+    const next = recent.length === 0 || now - recent[recent.length - 1] > 2000
+      ? [now]
+      : [...recent.slice(-7), now];
+    tapTimes.current = next;
+    if (next.length >= 2) {
+      const intervals = next.slice(1).map((value, index) => value - next[index]);
+      const average = intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
+      setTempo(Math.max(20, Math.min(400, Math.round(60000 / average))));
+    }
+  };
+
+  useEffect(() => {
+    if (!tapActive) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.matches('input, textarea, select, button')) return;
+      event.preventDefault();
+      registerTempoTap();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [tapActive]);
+
   const handleSaveCapture = async () => {
-    if (savedCapture) return; // already saved; use "Capture Next Idea" to start another
+    if (savedCapture) return; // already saved; use "Capture Another Part" to continue
     if (!selectedInstrumentId || !currentTuning) {
       setError(`Please select an instrument and a ${stringCount}-string tuning.`);
+      return;
+    }
+    if (compositionMode === 'existing' && !selectedCompositionId) {
+      setError('Choose the composition this motif belongs to.');
+      return;
+    }
+    if (compositionMode === 'new' && !newCompositionTitle.trim()) {
+      setError('Enter a title for the new composition.');
       return;
     }
 
@@ -268,6 +348,12 @@ export default function QuickCapturePage() {
     try {
       // One server-side SQLite transaction creates/reuses the capo + setup and inserts the motif.
       const tagArray = motifTags.split(',').map((t) => t.trim()).filter(Boolean);
+      const defaultTags = compositionMode === 'inbox' ? ['Quick Capture', 'Inbox'] : ['Quick Capture'];
+      const destination = compositionMode === 'existing'
+        ? { kind: 'existing', compositionId: selectedCompositionId, sectionName: sectionName.trim() || undefined }
+        : compositionMode === 'new'
+          ? { kind: 'new', title: newCompositionTitle.trim(), sectionName: sectionName.trim() || undefined }
+          : { kind: 'inbox' };
       saved = await fetchJson<SavedCapture>('/api/quick-capture', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -279,9 +365,13 @@ export default function QuickCapturePage() {
             name: motifName.trim() || 'Untitled Quick Capture Idea',
             function: motifFunction,
             tabData: tabColumns,
-            tags: tagArray.length > 0 ? tagArray : ['Quick Capture', 'Inbox'],
+            fretboardMap,
+            tempo: tempo === '' ? null : tempo,
+            timeSignature,
+            tags: tagArray.length > 0 ? tagArray : defaultTags,
             notes: motifNotes.trim() || 'Captured via Quick Capture mobile/desktop interface.',
           },
+          destination,
         }),
       });
     } catch (err) {
@@ -319,6 +409,7 @@ export default function QuickCapturePage() {
     setMotifTags('');
     setTabColumns(EMPTY_COLUMNS());
     setActiveColumnIndex(0);
+    setFretboardMap([]);
   };
 
   const handleStartNewCapture = () => {
@@ -353,7 +444,7 @@ export default function QuickCapturePage() {
             </h1>
           </div>
           <p className="text-xs text-stone-500 font-serif italic mt-0.5">
-            Low-friction capture for instrument in hand. Incomplete ideas safely enter the Archive Inbox.
+            Capture a motif, describe its musical context, and file it in the Inbox or a composition.
           </p>
         </div>
 
@@ -366,7 +457,7 @@ export default function QuickCapturePage() {
             className="flex items-center gap-2 px-4 py-2 bg-stone-900 text-stone-50 font-mono text-xs font-bold rounded shadow hover:bg-stone-800 disabled:opacity-50 transition-all"
           >
             <Save className="w-4 h-4 text-editorial-amber" />
-            <span>{saving ? 'SAVING...' : 'SAVE TO INBOX'}</span>
+            <span>{saving ? 'SAVING...' : compositionMode === 'inbox' ? 'SAVE TO INBOX' : 'SAVE & CONNECT'}</span>
           </button>
         </div>
       </div>
@@ -400,10 +491,23 @@ export default function QuickCapturePage() {
           <div className="flex items-center gap-2">
             <Check className="w-4 h-4 text-emerald-600 flex-shrink-0" />
             <div>
-              <span className="font-bold">{savedMotif.humanId} ({savedMotif.name})</span> saved to archive!
+              <div><span className="font-bold">{savedMotif.humanId} ({savedMotif.name})</span> saved.</div>
+              <div className="text-emerald-800">
+                {savedCapture?.composition
+                  ? `Connected to ${savedCapture.composition.humanId} (${savedCapture.composition.title}).`
+                  : 'Filed in the Motif Inbox. You can connect it to a composition later.'}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Link href="/library" className="underline text-emerald-800 hover:text-emerald-950 font-semibold">
+              Library
+            </Link>
+            {savedCapture?.composition && (
+              <Link href="/compositions" className="underline text-emerald-800 hover:text-emerald-950 font-semibold">
+                Compositions
+              </Link>
+            )}
             <Link
               href={`/print/motif/${savedMotif.id}`}
               className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
@@ -415,7 +519,7 @@ export default function QuickCapturePage() {
               onClick={handleStartNewCapture}
               className="px-2.5 py-1 bg-emerald-800 text-white rounded font-bold hover:bg-emerald-900"
             >
-              Capture Next Idea
+              Capture Another Part
             </button>
           </div>
         </div>
@@ -508,6 +612,13 @@ export default function QuickCapturePage() {
                 </option>
               ))}
           </select>
+          <Link
+            href="/tunings"
+            onClick={() => saveDraft(browserStorage(), { ...currentDraft, savedAt: Date.now() })}
+            className="inline-block text-[10px] text-stone-600 underline hover:text-stone-900"
+          >
+            Add or edit tunings (draft retained)
+          </Link>
         </div>
 
         {/* Capo Setup */}
@@ -542,7 +653,137 @@ export default function QuickCapturePage() {
         </div>
       </div>
 
-      {/* Synchronized TAB and Fretboard Editors */}
+      {/* Musical context and filing destination */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 bg-paper-100 border border-stone-300 rounded font-mono text-xs">
+        <div className="space-y-3">
+          <div className="font-bold tracking-wider text-stone-900 uppercase">4. RHYTHM & TEMPO</div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="block text-[11px] text-stone-600">TIME SIGNATURE</span>
+              <select
+                value={timeSignature}
+                onChange={(e) => setTimeSignature(e.target.value)}
+                className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5"
+              >
+                <option value="free">Free rhythm</option>
+                <option value="2/4">2/4</option>
+                <option value="3/4">3/4</option>
+                <option value="4/4">4/4</option>
+                <option value="5/4">5/4</option>
+                <option value="6/8">6/8</option>
+                <option value="7/8">7/8</option>
+                <option value="9/8">9/8</option>
+                <option value="12/8">12/8</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="block text-[11px] text-stone-600">TEMPO (BPM)</span>
+              <input
+                type="number"
+                min={20}
+                max={400}
+                value={tempo}
+                onChange={(e) => setTempo(e.target.value === '' ? '' : Number(e.target.value))}
+                placeholder="optional"
+                className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (!tapActive) tapTimes.current = [];
+                setTapActive((active) => !active);
+              }}
+              className={`px-3 py-2 border rounded font-bold ${tapActive ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
+            >
+              {tapActive ? 'TAP MODE ON' : 'ENABLE TAP TEMPO'}
+            </button>
+            <button
+              type="button"
+              onClick={registerTempoTap}
+              className="px-3 py-2 bg-stone-900 text-white rounded font-bold"
+            >
+              TAP
+            </button>
+            <span className="text-stone-500">
+              {tapActive ? 'Tap here or press Space away from form fields.' : 'Enable to use the Space bar.'}
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <div className="font-bold tracking-wider text-stone-900 uppercase">5. FILE THIS MOTIF</div>
+            <div className="text-[10px] text-stone-500 mt-0.5">
+              Choose now so the motif and composition link are saved in one transaction.
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            {([
+              ['inbox', 'Motif Inbox'],
+              ['existing', 'Existing Song'],
+              ['new', 'New Song'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setCompositionMode(value)}
+                className={`px-2 py-2 border rounded ${compositionMode === value ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {compositionMode === 'inbox' && (
+            <p className="text-stone-600">
+              Saves as an independent motif. It will remain easy to find and connect later.
+            </p>
+          )}
+          {compositionMode === 'existing' && (
+            <label className="space-y-1 block">
+              <span className="block text-[11px] text-stone-600">COMPOSITION</span>
+              <select
+                value={selectedCompositionId}
+                onChange={(e) => setSelectedCompositionId(e.target.value)}
+                className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5"
+              >
+                {compositions.length === 0 && <option value="">No compositions yet</option>}
+                {compositions.map((composition) => (
+                  <option key={composition.id} value={composition.id}>
+                    {composition.humanId} · {composition.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {compositionMode === 'new' && (
+            <label className="space-y-1 block">
+              <span className="block text-[11px] text-stone-600">NEW COMPOSITION TITLE</span>
+              <input
+                value={newCompositionTitle}
+                onChange={(e) => setNewCompositionTitle(e.target.value)}
+                placeholder="Working song title"
+                className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5"
+              />
+            </label>
+          )}
+          {compositionMode !== 'inbox' && (
+            <label className="space-y-1 block">
+              <span className="block text-[11px] text-stone-600">PART / SECTION (OPTIONAL)</span>
+              <input
+                value={sectionName}
+                onChange={(e) => setSectionName(e.target.value)}
+                placeholder="Intro, Verse 1, B section, transition..."
+                className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5"
+              />
+            </label>
+          )}
+        </div>
+      </div>
+
+      {/* TAB event editor and independent fretboard map */}
       <div className="space-y-4">
         {/* Tab Grid */}
         <TabGrid
@@ -574,8 +815,12 @@ export default function QuickCapturePage() {
           stringCount={stringCount}
           pitches={rawPitches}
           capoFrets={effectiveCapoFrets}
+          mode={fretboardMode}
+          onModeChange={setFretboardMode}
           activeNotes={tabColumns[activeColumnIndex]?.notes || []}
+          mapNotes={fretboardMap}
           onNoteClick={handleFretboardNoteClick}
+          onMapNoteClick={handleMapNoteClick}
         />
       </div>
 

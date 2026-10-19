@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capoConfigurations, motifs, setups } from '../../db/schema';
+import { capoConfigurations, compositions, compositionMotifs, compositionSetups, motifs, setups } from '../../db/schema';
 import { createTestDb, insertInstrument, insertTuning } from '../../test/test-db';
 import { createQuickCapture } from './quick-capture';
 
@@ -17,6 +17,17 @@ function seed() {
   insertTuning(t.db);
   insertInstrument(t.db, { id: 'inst-test-7', name: 'Test Seven', stringCount: 7 });
   return t;
+}
+
+function insertComposition(db: ReturnType<typeof createTestDb>['db']) {
+  db.insert(compositions).values({
+    id: 'comp-test',
+    humanId: 'C-900',
+    title: 'Test Song',
+    status: 'idea',
+    createdAt: 1,
+    updatedAt: 1,
+  }).run();
 }
 
 const validInput = {
@@ -86,5 +97,65 @@ describe('createQuickCapture (single transaction)', () => {
     const { db } = seed();
     expect(() => createQuickCapture(db, { ...validInput, instrumentId: 'missing' })).toThrow();
     expect(counts(db)).toEqual({ capos: 0, setups: 0, motifs: 0 });
+  });
+
+  it('stores tempo, time signature and an independent multi-note fretboard map', () => {
+    const { db } = seed();
+    const result = createQuickCapture(db, {
+      ...validInput,
+      motif: {
+        ...validInput.motif,
+        tempo: 112,
+        timeSignature: '6/8',
+        fretboardMap: [
+          { stringIndex: 0, fret: 0 },
+          { stringIndex: 0, fret: 3 },
+          { stringIndex: 5, fret: 5 },
+        ],
+      },
+    });
+    const row = db.select().from(motifs).all().find((m) => m.id === result.motif.id)!;
+    expect(row.tempo).toBe(112);
+    expect(row.timeSignature).toBe('6/8');
+    expect(JSON.parse(row.fretboardMap!)).toHaveLength(3);
+  });
+
+  it('links the motif and setup to an existing composition in the same transaction', () => {
+    const { db } = seed();
+    insertComposition(db);
+    const result = createQuickCapture(db, {
+      ...validInput,
+      destination: { kind: 'existing', compositionId: 'comp-test', sectionName: 'Verse idea' },
+    });
+    expect(result.composition).toMatchObject({ id: 'comp-test', humanId: 'C-900', title: 'Test Song' });
+    expect(db.select().from(compositionMotifs).all()).toEqual([
+      expect.objectContaining({ compositionId: 'comp-test', motifId: result.motif.id, sectionName: 'Verse idea', sortOrder: 0 }),
+    ]);
+    expect(db.select().from(compositionSetups).all()).toEqual([
+      expect.objectContaining({ compositionId: 'comp-test', setupId: result.setupId }),
+    ]);
+  });
+
+  it('creates a new composition and links the motif when requested', () => {
+    const { db } = seed();
+    const result = createQuickCapture(db, {
+      ...validInput,
+      motif: { ...validInput.motif, tempo: 90, timeSignature: '3/4' },
+      destination: { kind: 'new', title: 'New Song', sectionName: 'Opening' },
+    });
+    expect(result.composition).toMatchObject({ humanId: 'C-001', title: 'New Song' });
+    const comp = db.select().from(compositions).all()[0];
+    expect(comp).toMatchObject({ tempo: 90, timeSignature: '3/4' });
+    expect(db.select().from(compositionMotifs).all()[0]).toMatchObject({ motifId: result.motif.id, sectionName: 'Opening' });
+  });
+
+  it('rolls back motif, setup and capo when the requested composition does not exist', () => {
+    const { db } = seed();
+    expect(() => createQuickCapture(db, {
+      ...validInput,
+      destination: { kind: 'existing', compositionId: 'missing' },
+    })).toThrow(/Composition not found/);
+    expect(counts(db)).toEqual({ capos: 0, setups: 0, motifs: 0 });
+    expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
   });
 });

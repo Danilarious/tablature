@@ -51,6 +51,7 @@ export async function POST(req: Request) {
         const t = typeof body.tempo === 'number' ? body.tempo : parseInt(String(body.tempo ?? ''), 10);
         return Number.isFinite(t) && t > 0 && t < 1000 ? Math.round(t) : null;
       })(),
+      timeSignature: typeof body.timeSignature === 'string' && body.timeSignature.trim() ? body.timeSignature.trim() : null,
       tempoNotes: body.tempoNotes ? body.tempoNotes.trim() : null,
       pieceMap: body.pieceMap ? body.pieceMap.trim() : null,
       sections: body.sections ? (typeof body.sections === 'string' ? body.sections : JSON.stringify(body.sections)) : null,

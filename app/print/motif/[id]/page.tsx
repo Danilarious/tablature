@@ -1,8 +1,9 @@
 import React from 'react';
 import { getDatabase } from '@/app/db/client';
-import { motifs, setups, tunings, instruments } from '@/app/db/schema';
+import { motifs, setups, tunings, instruments, capoConfigurations } from '@/app/db/schema';
 import { eq } from 'drizzle-orm';
-import TabGrid from '@/app/components/TabGrid';
+import PrintableTablature from '@/app/components/PrintableTablature';
+import FretboardEditor from '@/app/components/FretboardEditor';
 import PrintButton from '@/app/components/PrintButton';
 import { notFound } from 'next/navigation';
 
@@ -24,10 +25,16 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
     ? await db.select().from(instruments).where(eq(instruments.id, motif.instrumentId))
     : [null];
 
+  const [capo] = setup?.capoConfigId
+    ? await db.select().from(capoConfigurations).where(eq(capoConfigurations.id, setup.capoConfigId))
+    : [null];
+
   const stringCount = instrument?.stringCount || tuning?.stringCount || 6;
   const pitches: string[] = tuning?.pitches ? JSON.parse(tuning.pitches) : ['E2', 'A2', 'D3', 'G3', 'B3', 'E4'];
   const tabCols = motif.tabData ? JSON.parse(motif.tabData) : [];
+  const fretboardMap = motif.fretboardMap ? JSON.parse(motif.fretboardMap) : [];
   const variations = motif.variations ? JSON.parse(motif.variations) : [];
+  const capoFrets = capo?.stringFrets ? JSON.parse(capo.stringFrets) : [];
 
   return (
     <div className="bg-white min-h-screen text-black font-sans p-4 sm:p-8">
@@ -64,7 +71,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
         </div>
 
         {/* Setup Context */}
-        <div className="border technical-rule p-3 grid grid-cols-3 gap-4 text-[11px]">
+        <div className="border technical-rule p-3 grid grid-cols-2 sm:grid-cols-5 gap-4 text-[11px]">
           <div>
             <span className="text-stone-500 block text-[9px] uppercase font-bold">INSTRUMENT</span>
             <span className="font-bold">{instrument?.name || 'Primary Instrument'}</span>
@@ -77,6 +84,14 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
             <span className="text-stone-500 block text-[9px] uppercase font-bold">PHYSICAL SETUP</span>
             <span className="font-bold">{setup?.name || 'Standard Setup'}</span>
           </div>
+          <div>
+            <span className="text-stone-500 block text-[9px] uppercase font-bold">METER</span>
+            <span className="font-bold">{motif.timeSignature && motif.timeSignature !== 'free' ? motif.timeSignature : 'Free'}</span>
+          </div>
+          <div>
+            <span className="text-stone-500 block text-[9px] uppercase font-bold">TEMPO</span>
+            <span className="font-bold">{motif.tempo ? `${motif.tempo} BPM` : 'Unspecified'}</span>
+          </div>
         </div>
 
         {/* Primary Transcription Staff */}
@@ -85,14 +100,29 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
             PRIMARY TRANSCRIPTION
           </span>
           <div className="border technical-rule p-3">
-            <TabGrid
+            <PrintableTablature
               stringCount={stringCount}
               pitches={pitches}
               columns={tabCols}
-              readOnly
             />
           </div>
         </div>
+
+        {fretboardMap.length > 0 && (
+          <div className="space-y-2 break-inside-avoid">
+            <span className="font-bold tracking-wider uppercase text-[10px] text-stone-600 block">
+              FRETBOARD MAP / TONAL AREA
+            </span>
+            <FretboardEditor
+              stringCount={stringCount}
+              pitches={pitches}
+              capoFrets={capoFrets}
+              mode="map"
+              mapNotes={fretboardMap}
+              readOnly
+            />
+          </div>
+        )}
 
         {/* Optional Variations Staff */}
         <div className="space-y-2">
@@ -103,11 +133,10 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
             variations.map((v: any, vIdx: number) => (
               <div key={vIdx} className="border technical-rule p-3 space-y-1">
                 <span className="font-bold text-[10px] block">{v.name || `Variation ${vIdx + 1}`}</span>
-                <TabGrid
+                <PrintableTablature
                   stringCount={stringCount}
                   pitches={pitches}
                   columns={v.tabData || []}
-                  readOnly
                 />
               </div>
             ))

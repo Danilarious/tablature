@@ -119,6 +119,9 @@ export const motifs = sqliteTable('motifs', {
   variations: text('variations'), // JSON array
   tags: text('tags'), // JSON array
   notes: text('notes'),
+  tempo: integer('tempo'), // optional captured BPM for this motif
+  timeSignature: text('time_signature'), // e.g. "4/4", "6/8", or "free"
+  fretboardMap: text('fretboard_map'), // JSON array of independently selected { stringIndex, fret } notes
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
@@ -131,6 +134,7 @@ export const compositions = sqliteTable('compositions', {
   status: text('status').default('idea').notNull(), // 'idea' | 'in_progress' | 'completed' | 'archived'
   tonalCenter: text('tonal_center'),
   tempo: integer('tempo'),
+  timeSignature: text('time_signature'), // e.g. "4/4", "6/8", or "free"
   tempoNotes: text('tempo_notes'),
   pieceMap: text('piece_map'),
   sections: text('sections'), // JSON array of { id: string, name: string, notes?: string, tabData?: any[] }

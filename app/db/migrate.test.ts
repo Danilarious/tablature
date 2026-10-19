@@ -52,7 +52,7 @@ describe('migrations on a fresh database', () => {
   it('creates the full schema from migrations only', () => {
     const db = new Database(':memory:');
     const result = applyMigrations(db, MIGRATIONS);
-    expect(result.applied).toEqual(['0000_baseline', '0001_review_flags_string_provenance', '0002_canonical_banjo_string_order']);
+    expect(result.applied).toEqual(['0000_baseline', '0001_review_flags_string_provenance', '0002_canonical_banjo_string_order', '0003_quick_capture_v1_1']);
     expect(result.backupPath).toBeNull();
     const cols = (db.prepare(`PRAGMA table_info(string_products)`).all() as { name: string }[]).map((c) => c.name);
     expect(cols).toEqual(expect.arrayContaining(['catalog_id', 'unit_weight_source', 'source_note', 'source_url', 'verified_at', 'unit_weight']));
@@ -80,7 +80,7 @@ describe('upgrading a pre-migration (legacy) database', () => {
     const backupDir = path.join(tmp, 'backups');
     const result = applyMigrations(db, MIGRATIONS, { backupDir });
     expect(result.adoptedLegacy).toBe(true);
-    expect(result.applied).toEqual(['0001_review_flags_string_provenance', '0002_canonical_banjo_string_order']);
+    expect(result.applied).toEqual(['0001_review_flags_string_provenance', '0002_canonical_banjo_string_order', '0003_quick_capture_v1_1']);
 
     // Pre-migration backup holds the untouched original.
     expect(result.backupPath && fs.existsSync(result.backupPath)).toBe(true);
@@ -88,8 +88,17 @@ describe('upgrading a pre-migration (legacy) database', () => {
     expect((backup.prepare(`SELECT pitches FROM tunings WHERE id='tuning-t007'`).get() as { pitches: string }).pitches).toBe(LEGACY_BANJO_TUNING.legacyPitchesJson);
     backup.close();
 
-    // Unrelated tables are byte-for-byte identical.
-    for (const t of PRESERVED_TABLES) expect(dumpTable(db, t)).toEqual(before[t]);
+    // Every pre-existing column value is preserved. Additive migrations may append nullable columns.
+    for (const table of PRESERVED_TABLES) {
+      const beforeRows = before[table] as Record<string, unknown>[];
+      const afterRows = dumpTable(db, table) as Record<string, unknown>[];
+      expect(afterRows).toHaveLength(beforeRows.length);
+      for (const beforeRow of beforeRows) {
+        const afterRow = afterRows.find((row) => row.id === beforeRow.id)!;
+        const preExistingValues = Object.fromEntries(Object.keys(beforeRow).map((key) => [key, afterRow[key]]));
+        expect(preExistingValues).toEqual(beforeRow);
+      }
+    }
 
     // Tunings: only T-007 changed, only its pitches; IDs, human IDs and timestamps preserved.
     const tuningsAfter = dumpTable(db, 'tunings') as Record<string, unknown>[];

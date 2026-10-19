@@ -30,6 +30,14 @@ const draft = (overrides: Partial<QuickCaptureDraft> = {}): QuickCaptureDraft =>
   customCapoFrets: [],
   tabColumns: [{ id: 'c1', notes: [{ stringIndex: 5, fret: 2 }] }],
   activeColumnIndex: 0,
+  fretboardMode: 'map',
+  fretboardMap: [],
+  tempo: null,
+  timeSignature: 'free',
+  compositionMode: 'inbox',
+  compositionId: '',
+  newCompositionTitle: '',
+  sectionName: '',
   title: 'Morning idea',
   motifFunction: 'riff',
   tags: 'modal',
@@ -44,6 +52,20 @@ describe('Quick Capture draft storage', () => {
     const s = memoryStorage();
     expect(saveDraft(s, draft())).toBe(true);
     expect(loadDraft(s)).toEqual(draft());
+  });
+
+  it('restores older v1 drafts with safe defaults for the new musical fields', () => {
+    const legacy: Record<string, unknown> = { ...draft() };
+    for (const key of ['fretboardMode', 'fretboardMap', 'tempo', 'timeSignature', 'compositionMode', 'compositionId', 'newCompositionTitle', 'sectionName']) {
+      delete legacy[key];
+    }
+    expect(parseDraft(JSON.stringify(legacy))).toMatchObject({
+      fretboardMode: 'map',
+      fretboardMap: [],
+      tempo: null,
+      timeSignature: 'free',
+      compositionMode: 'inbox',
+    });
   });
 
   it('does not save an empty draft and never clears an existing one on empty state', () => {
@@ -113,6 +135,18 @@ describe('resolveDraftRestore', () => {
     expect(plan.instrumentId).toBe('inst-5');
     expect(plan.tabColumns).toBeNull();
     expect(plan.warnings.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('restores multiple mapped positions on one string independently of TAB', () => {
+    const mapped = [{ stringIndex: 0, fret: 1 }, { stringIndex: 0, fret: 3 }, { stringIndex: 4, fret: 7 }];
+    const plan = resolveDraftRestore(draft({ fretboardMap: mapped }), instruments, tunings)!;
+    expect(plan.fretboardMap).toEqual(mapped);
+  });
+
+  it('drops a fretboard map that references a missing string', () => {
+    const plan = resolveDraftRestore(draft({ instrumentId: 'missing', fretboardMap: [{ stringIndex: 5, fret: 2 }] }), [{ id: 'inst-5', stringCount: 5 }], tunings)!;
+    expect(plan.fretboardMap).toEqual([]);
+    expect(plan.warnings.join(' ')).toContain('fretboard');
   });
 
   it('drops custom capo frets of the wrong length', () => {

@@ -62,7 +62,7 @@ describe('backup → restore round trip (live WAL database + media)', () => {
 
     const { dir, manifest } = await createBackup({ ...dirs });
     expect(path.basename(dir)).toMatch(/^bxb-backup-/);
-    expect(manifest.schema.latestMigration).toBe('0002_canonical_banjo_string_order');
+    expect(manifest.schema.latestMigration).toBe('0003_quick_capture_v1_1');
     expect(manifest.database.integrityCheck).toBe('ok');
     expect(manifest.database.tableCounts.motifs).toBe(1);
     expect(manifest.media.files.map((f) => f.path)).toEqual([`media/${att.filePath}`]);
