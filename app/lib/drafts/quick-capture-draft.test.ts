@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearDraft,
+  draftHasContent,
   loadDraft,
   parseDraft,
   QUICK_CAPTURE_DRAFT_KEY,
@@ -30,6 +31,14 @@ const draft = (overrides: Partial<QuickCaptureDraft> = {}): QuickCaptureDraft =>
   customCapoFrets: [],
   tabColumns: [{ id: 'c1', notes: [{ stringIndex: 5, fret: 2 }] }],
   activeColumnIndex: 0,
+  fretboardMode: 'map',
+  fretboardMap: [],
+  tempo: null,
+  timeSignature: 'free',
+  compositionMode: 'inbox',
+  compositionId: '',
+  newCompositionTitle: '',
+  sectionName: '',
   title: 'Morning idea',
   motifFunction: 'riff',
   tags: 'modal',
@@ -37,13 +46,40 @@ const draft = (overrides: Partial<QuickCaptureDraft> = {}): QuickCaptureDraft =>
   ...overrides,
 });
 
-const empty = () => draft({ title: '', tags: '', notes: '', tabColumns: [{ id: 'c1', notes: [] }] });
+const empty = (overrides: Partial<QuickCaptureDraft> = {}) => draft({ title: '', tags: '', notes: '', tabColumns: [{ id: 'c1', notes: [] }], ...overrides });
 
 describe('Quick Capture draft storage', () => {
   it('round-trips instrument, tuning, capo, TAB, title, tags and notes', () => {
     const s = memoryStorage();
     expect(saveDraft(s, draft())).toBe(true);
     expect(loadDraft(s)).toEqual(draft());
+  });
+
+  it('restores older v1 drafts with safe defaults for the new musical fields', () => {
+    const legacy: Record<string, unknown> = { ...draft() };
+    for (const key of ['fretboardMode', 'fretboardMap', 'tempo', 'timeSignature', 'compositionMode', 'compositionId', 'newCompositionTitle', 'sectionName']) {
+      delete legacy[key];
+    }
+    expect(parseDraft(JSON.stringify(legacy))).toMatchObject({
+      fretboardMode: 'map',
+      fretboardMap: [],
+      tempo: null,
+      timeSignature: 'free',
+      compositionMode: 'inbox',
+    });
+  });
+
+  it('normalizes legacy duration labels without discarding the draft', () => {
+    const legacy = { ...draft(), tabColumns: [{ id: 'c1', notes: [], duration: 'quarter' }] };
+    expect(parseDraft(JSON.stringify(legacy))?.tabColumns[0].duration).toBe('1/4');
+  });
+
+  it('treats newly entered musical and composition context as draft content', () => {
+    expect(draftHasContent(empty())).toBe(false);
+    expect(draftHasContent(empty({ tempo: 96 }))).toBe(true);
+    expect(draftHasContent(empty({ timeSignature: '6/8' }))).toBe(true);
+    expect(draftHasContent(empty({ compositionMode: 'new', newCompositionTitle: 'New song' }))).toBe(true);
+    expect(draftHasContent(empty({ compositionMode: 'existing', compositionId: 'comp-1', sectionName: 'Verse' }))).toBe(true);
   });
 
   it('does not save an empty draft and never clears an existing one on empty state', () => {
@@ -113,6 +149,18 @@ describe('resolveDraftRestore', () => {
     expect(plan.instrumentId).toBe('inst-5');
     expect(plan.tabColumns).toBeNull();
     expect(plan.warnings.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('restores multiple mapped positions on one string independently of TAB', () => {
+    const mapped = [{ stringIndex: 0, fret: 1 }, { stringIndex: 0, fret: 3 }, { stringIndex: 4, fret: 7 }];
+    const plan = resolveDraftRestore(draft({ fretboardMap: mapped }), instruments, tunings)!;
+    expect(plan.fretboardMap).toEqual(mapped);
+  });
+
+  it('drops a fretboard map that references a missing string', () => {
+    const plan = resolveDraftRestore(draft({ instrumentId: 'missing', fretboardMap: [{ stringIndex: 5, fret: 2 }] }), [{ id: 'inst-5', stringCount: 5 }], tunings)!;
+    expect(plan.fretboardMap).toEqual([]);
+    expect(plan.warnings.join(' ')).toContain('fretboard');
   });
 
   it('drops custom capo frets of the wrong length', () => {

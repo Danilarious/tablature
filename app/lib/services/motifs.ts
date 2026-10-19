@@ -4,10 +4,14 @@ import { z } from 'zod';
 import { instruments, motifPositions, motifs, positions, setups, tunings } from '../../db/schema';
 import { HttpError } from '../api/http';
 import {
+  assertFretboardMapMatchesStringCount,
   assertInstrumentTuningCompatible,
   assertTabMatchesStringCount,
+  fretboardMapSchema,
   tabDataSchema,
   tagsSchema,
+  tempoSchema,
+  timeSignatureSchema,
 } from '../validation/schemas';
 import { generateNextHumanId } from './human-ids';
 import type { SyncDb } from './setups';
@@ -26,6 +30,9 @@ export const motifInputSchema = z.object({
   variations: z.array(z.object({ name: z.string().max(200).optional(), tabData: tabDataSchema })).nullable().optional(),
   tags: tagsSchema.nullable().optional(),
   notes: z.string().max(10_000).nullable().optional(),
+  tempo: tempoSchema.nullable().optional(),
+  timeSignature: timeSignatureSchema.nullable().optional(),
+  fretboardMap: fretboardMapSchema.default([]),
   positionIds: z.array(z.string().min(1)).max(200).optional(),
 });
 export type MotifInput = z.infer<typeof motifInputSchema>;
@@ -53,6 +60,17 @@ function resolveMotifStringCount(db: SyncDb, input: MotifInput): number | null {
     if (input.tuningId && s.tuningId && s.tuningId !== input.tuningId) {
       throw new HttpError(400, 'Setup uses a different tuning.');
     }
+
+    if (s.instrumentId) {
+      const setupInstrument = db.select().from(instruments).where(eq(instruments.id, s.instrumentId)).get();
+      if (!setupInstrument) throw new HttpError(422, 'Setup references a missing instrument.');
+      instCount = setupInstrument.stringCount;
+    }
+    if (s.tuningId) {
+      const setupTuning = db.select().from(tunings).where(eq(tunings.id, s.tuningId)).get();
+      if (!setupTuning) throw new HttpError(422, 'Setup references a missing tuning.');
+      tunCount = setupTuning.stringCount;
+    }
   }
   if (instCount !== null && tunCount !== null) assertInstrumentTuningCompatible(instCount, tunCount);
   return instCount ?? tunCount;
@@ -64,6 +82,7 @@ export function insertMotif(db: SyncDb, rawInput: unknown) {
   const stringCount = resolveMotifStringCount(db, input);
   if (stringCount !== null) {
     assertTabMatchesStringCount(input.tabData, stringCount);
+    assertFretboardMapMatchesStringCount(input.fretboardMap, stringCount);
     for (const v of input.variations ?? []) assertTabMatchesStringCount(v.tabData, stringCount);
   }
   for (const posId of input.positionIds ?? []) {
@@ -86,6 +105,9 @@ export function insertMotif(db: SyncDb, rawInput: unknown) {
     variations: input.variations && input.variations.length > 0 ? JSON.stringify(input.variations) : null,
     tags: input.tags && input.tags.length > 0 ? JSON.stringify(input.tags) : null,
     notes: input.notes?.trim() || null,
+    tempo: input.tempo ?? null,
+    timeSignature: input.timeSignature ?? null,
+    fretboardMap: input.fretboardMap.length > 0 ? JSON.stringify(input.fretboardMap) : null,
     createdAt: now,
     updatedAt: now,
   };

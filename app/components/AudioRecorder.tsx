@@ -21,11 +21,13 @@ export interface AudioRecorderProps {
    * so it can be attached once the real record ID exists.
    */
   onCapture?: (media: CapturedMedia) => void;
+  /** Reports a live or stopped-but-not-kept recording so parent navigation can protect it. */
+  onTransientMediaChange?: (hasTransientMedia: boolean) => void;
 }
 
 const ACCEPT = 'audio/*,.webm,.ogg,.mp3,.m4a,.wav,.flac,.aif,.aiff,.pdf,.png,.jpg,.jpeg';
 
-export default function AudioRecorder({ parentType, parentId, onUploaded, onCapture }: AudioRecorderProps) {
+export default function AudioRecorder({ parentType, parentId, onUploaded, onCapture, onTransientMediaChange }: AudioRecorderProps) {
   const pendingMode = typeof onCapture === 'function';
   const canUploadNow = !pendingMode && !!parentId;
 
@@ -35,8 +37,11 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [isSupported, setIsSupported] = useState(true);
+  const [recordingLabel, setRecordingLabel] = useState('');
+  const [captureSettings, setCaptureSettings] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
@@ -53,10 +58,41 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
     };
   }, [audioUrl]);
 
+  useEffect(() => {
+    onTransientMediaChange?.(isRecording || audioBlob !== null);
+  }, [audioBlob, isRecording, onTransientMediaChange]);
+
+  useEffect(() => {
+    return () => {
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        if (recorder.state !== 'inactive') recorder.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      onTransientMediaChange?.(false);
+    };
+  }, [onTransientMediaChange]);
+
   const startRecording = async () => {
     try {
       setStatus(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+          sampleRate: { ideal: 48000 },
+        },
+      });
+      mediaStreamRef.current = stream;
+      const settings = stream.getAudioTracks()[0]?.getSettings();
+      setCaptureSettings(settings
+        ? `Music capture · ${settings.sampleRate ?? '?'} Hz · AGC ${settings.autoGainControl === false ? 'off' : 'browser controlled'}`
+        : 'Music capture requested');
       audioChunksRef.current = [];
 
       const mimeType = pickRecorderMimeType((t) => MediaRecorder.isTypeSupported(t));
@@ -69,22 +105,26 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
         const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
         setAudioBlob(blob);
         setAudioUrl(URL.createObjectURL(blob));
+        setIsRecording(false);
         stream.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
       };
 
       mediaRecorderRef.current = recorder;
       recorder.start();
       setIsRecording(true);
     } catch (err) {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      setIsRecording(false);
       console.warn('Microphone access denied or error:', err);
       setStatus({ kind: 'error', text: 'Microphone access denied or unavailable.' });
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
+    if (mediaRecorderRef.current && isRecording && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
-      setIsRecording(false);
     }
   };
 
@@ -95,8 +135,9 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
 
   const keepOrUploadRecording = async () => {
     if (!audioBlob) return;
-    const filename = `memo-${new Date().toISOString().replace(/[:.]/g, '-')}${extensionForMime(audioBlob.type)}`;
-    const description = 'In-browser audio memo';
+    const safeLabel = recordingLabel.trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+    const filename = `${safeLabel || 'memo'}-${new Date().toISOString().replace(/[:.]/g, '-')}${extensionForMime(audioBlob.type)}`;
+    const description = recordingLabel.trim() || 'In-browser audio memo';
     if (pendingMode) {
       onCapture!({ blob: audioBlob, filename, description });
       setStatus({ kind: 'ok', text: 'Recording kept — it will be attached when the idea is saved.' });
@@ -153,6 +194,20 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
       </div>
 
       {disabled && <p className="text-[11px] text-stone-500">Save the record first to attach files.</p>}
+
+      <label className="space-y-1">
+        <span className="block text-[11px] text-stone-600">RECORDING LABEL (OPTIONAL)</span>
+        <input
+          value={recordingLabel}
+          onChange={(e) => setRecordingLabel(e.target.value)}
+          placeholder="Verse idea, quiet fingerstyle take, ending variation..."
+          className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5"
+        />
+      </label>
+      <div className="text-[10px] text-stone-500">
+        Instrument-friendly capture requests browser gain control, noise suppression, and echo cancellation off.
+        {captureSettings ? ` ${captureSettings}` : ''}
+      </div>
 
       <div className="flex flex-wrap items-center gap-3">
         {isSupported && !disabled && (

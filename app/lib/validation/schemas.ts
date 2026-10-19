@@ -171,19 +171,63 @@ export const tabNoteSchema = z.object({
   fret: z.union([fretNumberSchema, z.literal('x')]),
 });
 
+export const TAB_DURATIONS = ['1', '1/2', '1/4', '1/8', '1/16', 'dotted 1/4', 'triplet 1/8'] as const;
+const LEGACY_DURATION_ALIASES: Record<string, (typeof TAB_DURATIONS)[number]> = {
+  whole: '1',
+  half: '1/2',
+  quarter: '1/4',
+  eighth: '1/8',
+  sixteenth: '1/16',
+  'dotted-quarter': 'dotted 1/4',
+  'triplet-eighth': 'triplet 1/8',
+};
+export const tabDurationSchema = z.preprocess(
+  (value) => (typeof value === 'string' ? LEGACY_DURATION_ALIASES[value] ?? value : value),
+  z.enum(TAB_DURATIONS)
+);
+export const TAB_BARLINES = ['single', 'double', 'final'] as const;
+export const TAB_COLUMN_KINDS = ['regular', 'grace'] as const;
+
 export const tabColumnSchema = z.object({
   id: z.string().min(1).max(100),
   notes: z.array(tabNoteSchema).max(MAX_STRINGS),
-  /** e.g. "1/4", "1/8", "dotted 1/4"; null/absent = free rhythm. */
-  duration: z.string().trim().max(20).nullable().optional(),
-  /** Free-text technique annotation (e.g. "h", "slide", "thumb drone"). */
+  /** null/absent = free rhythm. */
+  duration: tabDurationSchema.nullable().optional(),
+  /** Technique into/out of this event, rendered with familiar TAB symbols. */
   technique: z.string().trim().max(60).nullable().optional(),
   /** Explicit rest column (no notes sound). */
   rest: z.boolean().optional(),
+  /** Narrow event used for a passing/grace note. */
+  kind: z.enum(TAB_COLUMN_KINDS).optional(),
+  /** Optional measure/final boundary rendered after this event. */
+  barlineAfter: z.enum(TAB_BARLINES).nullable().optional(),
 });
 export type ValidTabColumn = z.infer<typeof tabColumnSchema>;
 
 export const tabDataSchema = z.array(tabColumnSchema).max(2000);
+
+export const timeSignatureSchema = z.union([
+  z.literal('free'),
+  z.string().regex(/^(?:[1-9]|1[0-6])\/(?:2|4|8|16)$/, 'Use a time signature such as 4/4, 6/8, or free.'),
+]);
+
+export const tempoSchema = z.number().int().min(20).max(400);
+
+export const fretboardMapNoteSchema = z.object({
+  stringIndex: z.number().int().min(0).max(MAX_STRINGS - 1),
+  fret: fretNumberSchema,
+});
+
+export const fretboardMapSchema = z.array(fretboardMapNoteSchema).max(500).superRefine((notes, ctx) => {
+  const seen = new Set<string>();
+  notes.forEach((note, index) => {
+    const key = `${note.stringIndex}:${note.fret}`;
+    if (seen.has(key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index], message: 'Duplicate fretboard-map note.' });
+    }
+    seen.add(key);
+  });
+});
 
 export class CompatibilityError extends Error {
   constructor(message: string, public readonly path: string[] = []) {
@@ -221,6 +265,14 @@ export function assertStringAssignmentsMatch(assignments: readonly StringAssignm
       throw new CompatibilityError(`Invalid or duplicate stringIndex ${a.stringIndex} for ${stringCount} strings.`, ['stringAssignments']);
     }
     seen.add(a.stringIndex);
+  }
+}
+
+export function assertFretboardMapMatchesStringCount(notes: readonly { stringIndex: number; fret: number }[], stringCount: number): void {
+  for (const note of notes) {
+    if (note.stringIndex >= stringCount) {
+      throw new CompatibilityError(`Fretboard map references string index ${note.stringIndex} but the instrument has ${stringCount} strings.`, ['fretboardMap']);
+    }
   }
 }
 

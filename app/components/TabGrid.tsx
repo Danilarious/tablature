@@ -4,18 +4,25 @@ import React from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { getStandardTabRows } from '@/app/lib/music/string-order';
 
+export const TAB_DURATIONS = ['1', '1/2', '1/4', '1/8', '1/16', 'dotted 1/4', 'triplet 1/8'] as const;
+export type TabDuration = (typeof TAB_DURATIONS)[number];
+export type TabBarline = 'single' | 'double' | 'final';
+export type TabColumnKind = 'regular' | 'grace';
+
 export interface TabNote {
   /** Canonical index: 0 = physical bass-side string. */
   stringIndex: number;
-  fret: number | 'x'; // fret number or 'x' (muted)
+  fret: number | 'x';
 }
 
 export interface TabColumn {
   id: string;
   notes: TabNote[];
-  duration?: string | null; // e.g. "1/4", "1/8", or null for free-rhythm
-  technique?: string | null; // e.g. "h", "p", "/"
+  duration?: TabDuration | null;
+  technique?: string | null;
   rest?: boolean;
+  kind?: TabColumnKind;
+  barlineAfter?: TabBarline | null;
 }
 
 export interface TabGridProps {
@@ -34,7 +41,6 @@ export interface TabGridProps {
 
 export const MAX_TAB_FRET = 36;
 
-/** Parses a TAB cell entry. Returns undefined for invalid input (ignored), null to clear. */
 export function parseTabCellInput(raw: string): number | 'x' | null | undefined {
   const trimmed = raw.trim();
   if (trimmed === '') return null;
@@ -44,6 +50,13 @@ export function parseTabCellInput(raw: string): number | 'x' | null | undefined 
     return n <= MAX_TAB_FRET ? n : undefined;
   }
   return undefined;
+}
+
+function barlineClass(barline: TabBarline | null | undefined): string {
+  if (barline === 'double') return 'border-r-[5px] border-double border-stone-800';
+  if (barline === 'final') return 'border-r-[7px] border-double border-stone-950';
+  if (barline === 'single') return 'border-r-2 border-stone-800';
+  return '';
 }
 
 export default function TabGrid({
@@ -57,47 +70,123 @@ export default function TabGrid({
   onAddColumn,
   onDeleteColumn,
 }: TabGridProps) {
-  // Treble-side string on top, labelled with its physical string number.
   const rows = getStandardTabRows(stringCount, pitches);
+  const activeColumn = columns[activeColumnIndex];
+
+  const updateColumn = (index: number, patch: Partial<TabColumn>) => {
+    if (readOnly || !onUpdateColumn || !columns[index]) return;
+    onUpdateColumn(index, { ...columns[index], ...patch });
+  };
 
   const handleCellChange = (colIdx: number, strIdx: number, valueStr: string) => {
     if (readOnly || !onUpdateColumn) return;
     const parsed = parseTabCellInput(valueStr);
-    if (parsed === undefined) return; // reject invalid characters / out-of-range frets
+    if (parsed === undefined) return;
     const col = columns[colIdx];
     const newNotes = col.notes.filter((n) => n.stringIndex !== strIdx);
     if (parsed !== null) newNotes.push({ stringIndex: strIdx, fret: parsed });
     onUpdateColumn(colIdx, { ...col, notes: newNotes, rest: newNotes.length > 0 ? false : col.rest });
   };
 
+  const cycleBarline = (index: number) => {
+    const current = columns[index]?.barlineAfter;
+    const next: TabBarline | null =
+      !current ? 'single' : current === 'single' ? 'double' : current === 'double' ? 'final' : null;
+    updateColumn(index, { barlineAfter: next });
+  };
+
   return (
     <div className="w-full bg-paper-50 border border-stone-300 rounded overflow-hidden select-none">
-      {/* Header controls */}
-      <div className="px-4 py-2 bg-stone-900 text-stone-100 flex items-center justify-between text-xs font-mono">
+      <div className="px-4 py-2 bg-stone-900 text-stone-100 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
         <div className="flex items-center gap-3">
           <span className="font-bold tracking-wider uppercase">TABLATURE STAFF</span>
           <span className="text-stone-400">({stringCount} STRINGS)</span>
         </div>
-        <div className="flex items-center gap-2">
-          {!readOnly && onAddColumn && (
-            <button
-              type="button"
-              onClick={onAddColumn}
-              className="flex items-center gap-1 px-2.5 py-1 bg-stone-100 text-stone-950 font-bold rounded hover:bg-white transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>ADD COLUMN</span>
-            </button>
-          )}
-        </div>
+        {!readOnly && onAddColumn && (
+          <button
+            type="button"
+            onClick={onAddColumn}
+            className="flex items-center gap-1 px-2.5 py-1 bg-stone-100 text-stone-950 font-bold rounded hover:bg-white transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>ADD EVENT</span>
+          </button>
+        )}
       </div>
 
-      {/* Main Staff Grid */}
+      {!readOnly && activeColumn && (
+        <div className="px-3 py-2 border-b border-stone-300 bg-stone-100 flex flex-wrap items-end gap-2 font-mono text-[11px]">
+          <label className="space-y-1">
+            <span className="block text-stone-500 uppercase">Length</span>
+            <select
+              value={activeColumn.duration ?? ''}
+              onChange={(e) => updateColumn(activeColumnIndex, { duration: (e.target.value || null) as TabDuration | null })}
+              className="bg-white border border-stone-300 rounded px-2 py-1"
+            >
+              <option value="">Free</option>
+              {TAB_DURATIONS.map((duration) => <option key={duration} value={duration}>{duration}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="block text-stone-500 uppercase">Technique</span>
+            <select
+              value={activeColumn.technique ?? ''}
+              onChange={(e) => updateColumn(activeColumnIndex, { technique: e.target.value || null })}
+              className="bg-white border border-stone-300 rounded px-2 py-1"
+            >
+              <option value="">None</option>
+              <option value="h">h · hammer-on</option>
+              <option value="p">p · pull-off</option>
+              <option value="/">/ · slide up</option>
+              <option value="\\">\ · slide down</option>
+              <option value="b">b · bend</option>
+              <option value="r">r · release</option>
+              <option value="~">~ · vibrato</option>
+              <option value="harm">harmonic</option>
+              <option value="pm">palm mute</option>
+              <option value="let ring">let ring</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => updateColumn(activeColumnIndex, {
+              kind: activeColumn.kind === 'grace' ? 'regular' : 'grace',
+            })}
+            className={`px-2 py-1 border rounded ${activeColumn.kind === 'grace' ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
+          >
+            Grace / passing note
+          </button>
+          <button
+            type="button"
+            onClick={() => updateColumn(activeColumnIndex, {
+              rest: !activeColumn.rest,
+              notes: activeColumn.rest ? activeColumn.notes : [],
+            })}
+            className={`px-2 py-1 border rounded ${activeColumn.rest ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
+          >
+            Rest
+          </button>
+          <label className="space-y-1">
+            <span className="block text-stone-500 uppercase">Bar after</span>
+            <select
+              value={activeColumn.barlineAfter ?? ''}
+              onChange={(e) => updateColumn(activeColumnIndex, { barlineAfter: (e.target.value || null) as TabBarline | null })}
+              className="bg-white border border-stone-300 rounded px-2 py-1"
+            >
+              <option value="">None</option>
+              <option value="single">Measure</option>
+              <option value="double">Section</option>
+              <option value="final">Final</option>
+            </select>
+          </label>
+          <span className="text-stone-500 ml-auto self-center">Editing event {activeColumnIndex + 1}</span>
+        </div>
+      )}
+
       <div className="overflow-x-auto p-4">
         <div className="flex">
-          {/* Left Staff Clef & Tuning Labels */}
           <div className="w-24 flex-shrink-0 border-r-2 border-stone-800 pr-2">
-            <div className="h-6"></div> {/* Spacer matching column metadata */}
+            <div className="h-6" />
             <div className="space-y-4 py-2">
               {rows.map((row) => (
                 <div key={row.index} className="h-7 flex items-center justify-between font-mono text-xs" data-row-string-index={row.index}>
@@ -106,29 +195,42 @@ export default function TabGrid({
                 </div>
               ))}
             </div>
-            <div className="h-6"></div> {/* Spacer matching bottom buttons */}
+            <div className="h-6" />
           </div>
 
-          {/* Sequential TAB Columns */}
           <div className="flex divide-x divide-stone-200">
             {columns.map((col, colIdx) => {
               const isActive = colIdx === activeColumnIndex;
-              const header = [col.duration, col.technique].filter(Boolean).join(' ') || (col.rest ? 'rest' : String(colIdx + 1));
+              const header = [
+                col.kind === 'grace' ? 'grace' : null,
+                col.duration,
+                col.technique,
+                col.rest ? 'rest' : null,
+              ].filter(Boolean).join(' ') || String(colIdx + 1);
 
               return (
                 <div
                   key={col.id || colIdx}
                   onClick={() => onSelectColumn?.(colIdx)}
-                  className={`w-14 flex-shrink-0 flex flex-col items-center ${readOnly ? '' : 'cursor-pointer'} transition-colors ${
+                  className={`${col.kind === 'grace' ? 'w-9' : 'w-14'} relative group/column flex-shrink-0 flex flex-col items-center ${barlineClass(col.barlineAfter)} ${readOnly ? '' : 'cursor-pointer'} transition-colors ${
                     isActive ? 'bg-amber-100/50 ring-1 ring-amber-500' : readOnly ? '' : 'hover:bg-stone-100/60'
                   }`}
                 >
-                  {/* Column Header / Duration / Technique */}
                   <div className="h-6 w-full flex items-center justify-center font-mono text-[10px] text-stone-500 border-b border-stone-200 truncate px-0.5" title={header}>
                     <span>{header}</span>
                   </div>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); cycleBarline(colIdx); }}
+                      title="Cycle barline after this event"
+                      aria-label={`Barline after event ${colIdx + 1}`}
+                      className="absolute -right-1.5 top-0 z-20 h-6 w-3 opacity-0 group-hover/column:opacity-100 focus:opacity-100 bg-stone-700 text-white text-[8px] rounded"
+                    >
+                      |
+                    </button>
+                  )}
 
-                  {/* Vertical String Lines & Inputs */}
                   <div className="space-y-4 py-2 w-full flex flex-col items-center">
                     {rows.map((row) => {
                       const strIdx = row.index;
@@ -137,14 +239,12 @@ export default function TabGrid({
 
                       return (
                         <div key={strIdx} className="h-7 w-full flex items-center justify-center relative">
-                          {/* Continuous staff line behind cell */}
                           <div className="absolute inset-x-0 h-px bg-stone-300 pointer-events-none" />
-
+                          {col.rest && (
+                            <span className="absolute z-10 bg-white px-1 text-stone-500 font-serif text-sm">𝄽</span>
+                          )}
                           {readOnly ? (
-                            <span
-                              className="w-8 h-6 flex items-center justify-center font-mono text-xs font-bold z-10 bg-white"
-                              data-cell-string-index={strIdx}
-                            >
+                            <span className={`w-8 h-6 flex items-center justify-center font-mono font-bold z-10 bg-white ${col.kind === 'grace' ? 'text-[9px] align-super' : 'text-xs'}`} data-cell-string-index={strIdx}>
                               {val}
                             </span>
                           ) : (
@@ -157,11 +257,12 @@ export default function TabGrid({
                               data-cell-string-index={strIdx}
                               onChange={(e) => handleCellChange(colIdx, strIdx, e.target.value)}
                               onFocus={() => onSelectColumn?.(colIdx)}
-                              placeholder="—"
-                              className={`w-8 h-6 text-center font-mono text-xs font-bold rounded z-10 transition-colors ${
+                              placeholder={col.rest ? '' : '—'}
+                              disabled={!!col.rest}
+                              className={`w-8 h-6 text-center font-mono font-bold rounded z-10 transition-colors ${col.kind === 'grace' ? 'text-[9px]' : 'text-xs'} ${
                                 val !== ''
                                   ? 'bg-stone-900 text-stone-50 border border-stone-900'
-                                  : 'bg-white/80 text-stone-400 border border-stone-300 focus:bg-white focus:text-stone-900'
+                                  : 'bg-white/80 text-stone-400 border border-stone-300 focus:bg-white focus:text-stone-900 disabled:opacity-0'
                               }`}
                             />
                           )}
@@ -170,16 +271,12 @@ export default function TabGrid({
                     })}
                   </div>
 
-                  {/* Column Bottom Actions */}
                   {!readOnly && onDeleteColumn && (
                     <div className="h-6 w-full flex items-center justify-center border-t border-stone-200 opacity-60 hover:opacity-100">
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteColumn(colIdx);
-                        }}
-                        title="Delete Column"
+                        onClick={(e) => { e.stopPropagation(); onDeleteColumn(colIdx); }}
+                        title="Delete event"
                         className="text-stone-400 hover:text-red-700 p-0.5"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -190,13 +287,12 @@ export default function TabGrid({
               );
             })}
 
-            {/* Quick Add Column Button at end of grid */}
             {!readOnly && onAddColumn && (
               <div className="w-12 flex-shrink-0 flex items-center justify-center">
                 <button
                   type="button"
                   onClick={onAddColumn}
-                  title="Append Column"
+                  title="Append event"
                   className="w-8 h-8 rounded border border-dashed border-stone-400 hover:border-stone-900 hover:bg-stone-200 flex items-center justify-center text-stone-700 transition-colors"
                 >
                   <Plus className="w-4 h-4" />

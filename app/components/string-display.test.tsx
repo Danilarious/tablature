@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TabGrid, { TabColumn, parseTabCellInput } from './TabGrid';
-import FretboardEditor from './FretboardEditor';
+import FretboardEditor, { mappedFretboardExtent } from './FretboardEditor';
+import PrintableTablature, { restGlyph } from './PrintableTablature';
 
 const STANDARD_6 = ['E2', 'A2', 'D3', 'G3', 'B3', 'E4'];
 const BANJO_OPEN_G = ['G4', 'D3', 'G3', 'B3', 'D4'];
@@ -94,6 +95,67 @@ describe('TAB input and fretboard clicks reference the same canonical string ind
       if (el.type === 'button' && el.props['data-tab-fret'] === 7) el.props.onClick();
     });
     expect(clicks).toEqual([[5, 7]]);
+  });
+
+  it('hides unselected open strings in a read-only fretboard map', () => {
+    const tree = FretboardEditor({
+      stringCount: 6,
+      pitches: STANDARD_6,
+      mode: 'map',
+      mapNotes: [{ stringIndex: 5, fret: 0 }],
+      readOnly: true,
+    });
+    const openButtons: React.ReactElement<any>[] = [];
+    walk(tree, (el) => {
+      if (el.type === 'button' && el.props['data-tab-fret'] === undefined && /open:|at capo/.test(el.props.title ?? '')) openButtons.push(el);
+    });
+    expect(openButtons).toHaveLength(6);
+    expect(openButtons.filter((button) => !String(button.props.className).includes('opacity-0'))).toHaveLength(1);
+  });
+
+  it('does not duplicate a TAB-zero marker at the physical capo fret', () => {
+    const tree = FretboardEditor({
+      stringCount: 6,
+      pitches: STANDARD_6,
+      capoFrets: [2, 2, 2, 2, 2, 2],
+      mode: 'map',
+      mapNotes: [{ stringIndex: 0, fret: 0 }],
+      readOnly: true,
+    });
+    const visibleMarkers: React.ReactElement<any>[] = [];
+    walk(tree, (el) => {
+      if (el.type === 'button' && !String(el.props.className).includes('opacity-0')) visibleMarkers.push(el);
+    });
+    expect(visibleMarkers).toHaveLength(1);
+    expect(visibleMarkers[0].props.title).toContain('at capo (TAB 0)');
+  });
+
+  it('extends a printed map to its highest physical fret, including capo offset', () => {
+    expect(mappedFretboardExtent([{ stringIndex: 0, fret: 16 }], [], 15)).toBe(16);
+    expect(mappedFretboardExtent([{ stringIndex: 0, fret: 16 }], [5], 15)).toBe(21);
+    expect(mappedFretboardExtent([{ stringIndex: 0, fret: 2 }], [], 15)).toBe(15);
+  });
+
+  it('prints one duration-correct rest marker per TAB event rather than one per string', () => {
+    const html = renderToStaticMarkup(
+      <PrintableTablature
+        stringCount={6}
+        pitches={STANDARD_6}
+        columns={[{ id: 'rest', notes: [], rest: true, duration: '1/4' }]}
+      />
+    );
+    expect(html.match(/𝄽/g)).toHaveLength(1);
+    expect(restGlyph('1')).toBe('𝄻');
+    expect(restGlyph('1/2')).toBe('𝄼');
+    expect(restGlyph('1/8')).toBe('𝄾');
+    expect(restGlyph('1/16')).toBe('𝄿');
+    expect(restGlyph('dotted 1/4')).toBe('𝄽·');
+    expect(restGlyph('triplet 1/8')).toBe('𝄾₃');
+    expect(restGlyph('quarter')).toBe('𝄽');
+    expect(restGlyph('eighth')).toBe('𝄾');
+    expect(restGlyph('dotted-quarter')).toBe('𝄽·');
+    expect(restGlyph('triplet-eighth')).toBe('𝄾₃');
+    expect(restGlyph(null)).toBe('R');
   });
 
   it('with a capo, a fretboard click records the capo-relative TAB fret on the same index', () => {

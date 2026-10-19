@@ -199,7 +199,7 @@ describe('migrationCompatibilityError gap detection', () => {
     const status = getMigrationStatus(db, MIGRATIONS);
     expect(status.gapMigrations.map((g) => g.tag)).toContain('0000_baseline');
     expect(status.gapMigrations.map((g) => g.tag)).toContain('0001_review_flags_string_provenance');
-    expect(status.pending).toHaveLength(0); // nothing after 0002 — the bug's symptom
+    expect(status.pending.map((migration) => migration.tag)).toEqual(['0003_quick_capture_v1_1']);
     const err = migrationCompatibilityError(status);
     expect(err).toMatch(/gap/i);
     db.close();
