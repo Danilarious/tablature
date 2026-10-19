@@ -98,6 +98,7 @@ export default function QuickCapturePage() {
   const [pendingMedia, setPendingMedia] = useState<PendingMediaItem[]>([]);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [recorderHasTransientMedia, setRecorderHasTransientMedia] = useState(false);
+  const [recorderSessionKey, setRecorderSessionKey] = useState(0);
 
   // Draft recovery (localStorage). Autosave starts only after the initial restore attempt.
   const [draftHydrated, setDraftHydrated] = useState(false);
@@ -256,6 +257,24 @@ export default function QuickCapturePage() {
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
   }, [needsLeaveWarning]);
+
+  // Next.js links do not trigger beforeunload, so capture all anchor navigation while media is memory-only.
+  useEffect(() => {
+    if (!hasMediaAtRisk) return;
+    const handler = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target;
+      const anchor = target instanceof Element ? target.closest('a[href]') : null;
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      window.alert('Keep or discard the current recording, wait for media to finish attaching, or retry the failed upload before leaving. The recording or file is still held only on this page.');
+    };
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [hasMediaAtRisk]);
 
   const handleCapturedMedia = (media: CapturedMedia) => {
     setPendingMedia((prev) => [
@@ -445,6 +464,8 @@ export default function QuickCapturePage() {
       const ok = window.confirm('A recording or file has not been safely attached yet. Starting a new capture will drop it. Continue?');
       if (!ok) return;
     }
+    setRecorderSessionKey((current) => current + 1);
+    setRecorderHasTransientMedia(false);
     setSavedCapture(null);
     setPendingMedia([]);
     resetCaptureFields();
@@ -946,6 +967,7 @@ export default function QuickCapturePage() {
           {savedMotif ? (
             // After saving, new recordings attach directly to the real motif.
             <AudioRecorder
+              key={recorderSessionKey}
               parentType="motif"
               parentId={savedMotif.id}
               onTransientMediaChange={setRecorderHasTransientMedia}
@@ -953,6 +975,7 @@ export default function QuickCapturePage() {
           ) : (
             // Before saving, recordings stay pending in the browser until the motif exists.
             <AudioRecorder
+              key={recorderSessionKey}
               parentType="motif"
               onCapture={handleCapturedMedia}
               onTransientMediaChange={setRecorderHasTransientMedia}

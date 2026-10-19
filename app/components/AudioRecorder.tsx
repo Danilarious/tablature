@@ -41,6 +41,7 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
   const [captureSettings, setCaptureSettings] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
@@ -61,6 +62,20 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
     onTransientMediaChange?.(isRecording || audioBlob !== null);
   }, [audioBlob, isRecording, onTransientMediaChange]);
 
+  useEffect(() => {
+    return () => {
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        if (recorder.state !== 'inactive') recorder.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      onTransientMediaChange?.(false);
+    };
+  }, [onTransientMediaChange]);
+
   const startRecording = async () => {
     try {
       setStatus(null);
@@ -73,6 +88,7 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
           sampleRate: { ideal: 48000 },
         },
       });
+      mediaStreamRef.current = stream;
       const settings = stream.getAudioTracks()[0]?.getSettings();
       setCaptureSettings(settings
         ? `Music capture · ${settings.sampleRate ?? '?'} Hz · AGC ${settings.autoGainControl === false ? 'off' : 'browser controlled'}`
@@ -91,12 +107,16 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
         setAudioUrl(URL.createObjectURL(blob));
         setIsRecording(false);
         stream.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
       };
 
       mediaRecorderRef.current = recorder;
       recorder.start();
       setIsRecording(true);
     } catch (err) {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      setIsRecording(false);
       console.warn('Microphone access denied or error:', err);
       setStatus({ kind: 'error', text: 'Microphone access denied or unavailable.' });
     }
