@@ -23,6 +23,27 @@ function boundaryStyle(barline: TabBarline | null | undefined): React.CSSPropert
   return { borderRight: '1px solid #e7e5e4' };
 }
 
+export function restGlyph(duration: TabColumn['duration']): string {
+  switch (duration) {
+    case '1':
+      return '𝄻';
+    case '1/2':
+      return '𝄼';
+    case '1/4':
+      return '𝄽';
+    case '1/8':
+      return '𝄾';
+    case '1/16':
+      return '𝄿';
+    case 'dotted 1/4':
+      return '𝄽·';
+    case 'triplet 1/8':
+      return '𝄾₃';
+    default:
+      return 'R';
+  }
+}
+
 export default function PrintableTablature({
   stringCount,
   pitches,
@@ -75,7 +96,7 @@ export default function PrintableTablature({
                         <div key={row.index} className="h-7 relative flex items-center justify-center border-b border-stone-200 last:border-b-0">
                           <div className="absolute inset-x-0 h-px bg-stone-500" />
                           {column.rest && row.index === rows[Math.floor(rows.length / 2)]?.index ? (
-                            <span className="relative bg-white px-1 text-stone-700 font-serif text-sm">𝄽</span>
+                            <span className="relative bg-white px-1 text-stone-700 font-serif text-sm">{restGlyph(column.duration)}</span>
                           ) : note ? (
                             <span className={`relative bg-white px-1 font-mono font-bold ${column.kind === 'grace' ? 'text-[8px] -translate-y-1' : 'text-[11px]'}`}>
                               {note.fret}
