@@ -40,8 +40,18 @@ export interface StorageLike {
 }
 
 /** A draft worth keeping has musical content or text (selection changes alone are not saved). */
-export function draftHasContent(d: Pick<QuickCaptureDraft, 'tabColumns' | 'fretboardMap' | 'title' | 'tags' | 'notes'>): boolean {
-  return d.title.trim() !== '' || d.tags.trim() !== '' || d.notes.trim() !== '' || d.fretboardMap.length > 0 || d.tabColumns.some((c) => c.notes.length > 0 || !!c.technique || !!c.duration || !!c.rest || !!c.barlineAfter || c.kind === 'grace');
+export function draftHasContent(d: Pick<QuickCaptureDraft, 'tabColumns' | 'fretboardMap' | 'title' | 'tags' | 'notes' | 'tempo' | 'timeSignature' | 'compositionMode' | 'compositionId' | 'newCompositionTitle' | 'sectionName'>): boolean {
+  return d.title.trim() !== ''
+    || d.tags.trim() !== ''
+    || d.notes.trim() !== ''
+    || d.tempo !== null
+    || d.timeSignature !== 'free'
+    || d.compositionMode !== 'inbox'
+    || d.compositionId.trim() !== ''
+    || d.newCompositionTitle.trim() !== ''
+    || d.sectionName.trim() !== ''
+    || d.fretboardMap.length > 0
+    || d.tabColumns.some((c) => c.notes.length > 0 || !!c.technique || !!c.duration || !!c.rest || !!c.barlineAfter || c.kind === 'grace');
 }
 
 export function parseDraft(raw: string | null | undefined): QuickCaptureDraft | null {

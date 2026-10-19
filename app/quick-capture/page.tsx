@@ -286,7 +286,7 @@ export default function QuickCapturePage() {
     }
 
     const updatedCols = [...tabColumns];
-    updatedCols[activeColumnIndex] = { ...activeCol, notes: newNotes };
+    updatedCols[activeColumnIndex] = { ...activeCol, notes: newNotes, rest: newNotes.length > 0 ? false : activeCol.rest };
     setTabColumns(updatedCols);
   };
 

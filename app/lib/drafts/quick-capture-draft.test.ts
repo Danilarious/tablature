@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearDraft,
+  draftHasContent,
   loadDraft,
   parseDraft,
   QUICK_CAPTURE_DRAFT_KEY,
@@ -45,7 +46,7 @@ const draft = (overrides: Partial<QuickCaptureDraft> = {}): QuickCaptureDraft =>
   ...overrides,
 });
 
-const empty = () => draft({ title: '', tags: '', notes: '', tabColumns: [{ id: 'c1', notes: [] }] });
+const empty = (overrides: Partial<QuickCaptureDraft> = {}) => draft({ title: '', tags: '', notes: '', tabColumns: [{ id: 'c1', notes: [] }], ...overrides });
 
 describe('Quick Capture draft storage', () => {
   it('round-trips instrument, tuning, capo, TAB, title, tags and notes', () => {
@@ -71,6 +72,14 @@ describe('Quick Capture draft storage', () => {
   it('normalizes legacy duration labels without discarding the draft', () => {
     const legacy = { ...draft(), tabColumns: [{ id: 'c1', notes: [], duration: 'quarter' }] };
     expect(parseDraft(JSON.stringify(legacy))?.tabColumns[0].duration).toBe('1/4');
+  });
+
+  it('treats newly entered musical and composition context as draft content', () => {
+    expect(draftHasContent(empty())).toBe(false);
+    expect(draftHasContent(empty({ tempo: 96 }))).toBe(true);
+    expect(draftHasContent(empty({ timeSignature: '6/8' }))).toBe(true);
+    expect(draftHasContent(empty({ compositionMode: 'new', newCompositionTitle: 'New song' }))).toBe(true);
+    expect(draftHasContent(empty({ compositionMode: 'existing', compositionId: 'comp-1', sectionName: 'Verse' }))).toBe(true);
   });
 
   it('does not save an empty draft and never clears an existing one on empty state', () => {
