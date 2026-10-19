@@ -3,7 +3,8 @@ import { getDatabase } from '@/app/db/client';
 import { motifs, setups, tunings, instruments, capoConfigurations } from '@/app/db/schema';
 import { eq } from 'drizzle-orm';
 import PrintableTablature from '@/app/components/PrintableTablature';
-import FretboardEditor, { mappedFretboardExtent } from '@/app/components/FretboardEditor';
+import FretboardEditor from '@/app/components/FretboardEditor';
+import { mappedFretboardExtent } from '@/app/lib/music/string-order';
 import PrintButton from '@/app/components/PrintButton';
 import { notFound } from 'next/navigation';
 

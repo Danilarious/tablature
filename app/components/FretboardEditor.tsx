@@ -26,17 +26,6 @@ export interface FretboardEditorProps {
 
 const INLAY_FRETS = [3, 5, 7, 9, 12, 15, 17, 19, 21, 24];
 
-export function mappedFretboardExtent(
-  notes: FretboardNote[],
-  capoFrets: (number | null)[] = [],
-  minimum = 15
-): number {
-  return notes.reduce((highest, note) => {
-    const physicalFret = neckFretFromTabFret(note.fret, capoFrets[note.stringIndex] ?? null);
-    return Math.max(highest, physicalFret);
-  }, minimum);
-}
-
 export default function FretboardEditor({
   stringCount,
   pitches,
