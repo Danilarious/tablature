@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TabGrid, { TabColumn, parseTabCellInput } from './TabGrid';
-import FretboardEditor, { mappedFretboardExtent } from './FretboardEditor';
+import FretboardEditor from './FretboardEditor';
+import { mappedFretboardExtent } from '@/app/lib/music/string-order';
 import PrintableTablature, { restGlyph } from './PrintableTablature';
 
 const STANDARD_6 = ['E2', 'A2', 'D3', 'G3', 'B3', 'E4'];

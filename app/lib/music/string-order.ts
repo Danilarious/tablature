@@ -94,6 +94,18 @@ export function tabFretFromNeckFret(neckFret: number, capoFret: number | null | 
   return neckFret - capo;
 }
 
+/** Highest physical neck fret needed to display a capo-relative fretboard map. */
+export function mappedFretboardExtent(
+  notes: readonly { stringIndex: number; fret: number }[],
+  capoFrets: readonly (number | null)[] = [],
+  minimum = 15
+): number {
+  return notes.reduce((highest, note) => {
+    const physicalFret = neckFretFromTabFret(note.fret, capoFrets[note.stringIndex] ?? null);
+    return Math.max(highest, physicalFret);
+  }, minimum);
+}
+
 // ---------------------------------------------------------------------------
 // Known legacy values (from the initial seed) that used treble-first ordering.
 // Only these EXACT stored values may be rewritten automatically by migration 0001.
