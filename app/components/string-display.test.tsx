@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TabGrid, { TabColumn, parseTabCellInput } from './TabGrid';
-import FretboardEditor from './FretboardEditor';
+import FretboardEditor, { mappedFretboardExtent } from './FretboardEditor';
+import PrintableTablature from './PrintableTablature';
 
 const STANDARD_6 = ['E2', 'A2', 'D3', 'G3', 'B3', 'E4'];
 const BANJO_OPEN_G = ['G4', 'D3', 'G3', 'B3', 'D4'];
@@ -110,6 +111,19 @@ describe('TAB input and fretboard clicks reference the same canonical string ind
     });
     expect(openButtons).toHaveLength(6);
     expect(openButtons.filter((button) => !String(button.props.className).includes('opacity-0'))).toHaveLength(1);
+  });
+
+  it('extends a printed map to its highest physical fret, including capo offset', () => {
+    expect(mappedFretboardExtent([{ stringIndex: 0, fret: 16 }], [], 15)).toBe(16);
+    expect(mappedFretboardExtent([{ stringIndex: 0, fret: 16 }], [5], 15)).toBe(21);
+    expect(mappedFretboardExtent([{ stringIndex: 0, fret: 2 }], [], 15)).toBe(15);
+  });
+
+  it('prints one rest marker per TAB event rather than one per string', () => {
+    const html = renderToStaticMarkup(
+      <PrintableTablature stringCount={6} pitches={STANDARD_6} columns={[{ id: 'rest', notes: [], rest: true }]} />
+    );
+    expect(html.match(/𝄽/g)).toHaveLength(1);
   });
 
   it('with a capo, a fretboard click records the capo-relative TAB fret on the same index', () => {

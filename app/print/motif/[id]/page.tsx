@@ -3,7 +3,7 @@ import { getDatabase } from '@/app/db/client';
 import { motifs, setups, tunings, instruments, capoConfigurations } from '@/app/db/schema';
 import { eq } from 'drizzle-orm';
 import PrintableTablature from '@/app/components/PrintableTablature';
-import FretboardEditor from '@/app/components/FretboardEditor';
+import FretboardEditor, { mappedFretboardExtent } from '@/app/components/FretboardEditor';
 import PrintButton from '@/app/components/PrintButton';
 import { notFound } from 'next/navigation';
 
@@ -35,6 +35,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
   const fretboardMap = motif.fretboardMap ? JSON.parse(motif.fretboardMap) : [];
   const variations = motif.variations ? JSON.parse(motif.variations) : [];
   const capoFrets = capo?.stringFrets ? JSON.parse(capo.stringFrets) : [];
+  const printFretboardExtent = mappedFretboardExtent(fretboardMap, capoFrets);
 
   return (
     <div className="bg-white min-h-screen text-black font-sans p-4 sm:p-8">
@@ -119,6 +120,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
               capoFrets={capoFrets}
               mode="map"
               mapNotes={fretboardMap}
+              maxFret={printFretboardExtent}
               readOnly
             />
           </div>
