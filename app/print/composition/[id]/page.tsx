@@ -40,7 +40,10 @@ export default async function PrintCompositionPage({ params }: { params: { id: s
   const instMap = new Map<string, any>(allInstruments.map(i => [i.id, i]));
   const tunMap = new Map<string, any>(allTunings.map(t => [t.id, t]));
 
-  const linkedMotifRecords = compMots.map(cm => motifMap.get(cm.motifId)).filter(Boolean);
+  const linkedMotifRecords = compMots
+    .map((link) => ({ motif: motifMap.get(link.motifId), sectionName: link.sectionName, sortOrder: link.sortOrder }))
+    .filter((entry) => Boolean(entry.motif))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
   const linkedPosRecords = compPos.map(cp => posMap.get(cp.positionId)).filter(Boolean);
   const firstSetup = compSets[0] ? setupMap.get(compSets[0].setupId) : null;
   const instrument = firstSetup ? instMap.get(firstSetup.instrumentId!) : null;
@@ -157,7 +160,8 @@ export default async function PrintCompositionPage({ params }: { params: { id: s
           </span>
 
           {linkedMotifRecords.length > 0 ? (
-            linkedMotifRecords.map((m: any) => {
+            linkedMotifRecords.map((linked: any) => {
+              const m = linked.motif;
               const tabCols = m.tabData ? JSON.parse(m.tabData) : [];
               const motifSetup = m.setupId ? setupMap.get(m.setupId) : null;
               const motifInstrument = (m.instrumentId ? instMap.get(m.instrumentId) : null)
@@ -173,7 +177,12 @@ export default async function PrintCompositionPage({ params }: { params: { id: s
               return (
                 <div key={m.id} className="border technical-rule p-3 space-y-2">
                   <div className="flex items-center justify-between border-b technical-rule pb-1 gap-3">
-                    <span className="font-bold">{m.humanId} — {m.name}</span>
+                    <span className="font-bold">
+                      {m.humanId} — {m.name}
+                      {linked.sectionName && (
+                        <span className="ml-2 border border-stone-500 px-1.5 py-0.5 text-[9px] uppercase">{linked.sectionName}</span>
+                      )}
+                    </span>
                     <span className="text-[10px] uppercase text-stone-600 text-right">
                       {m.function} · {motifInstrument?.name || `${motifStringCount}-string`} · {motifTuning?.name || 'Unknown tuning'}
                     </span>
