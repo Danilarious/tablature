@@ -13,7 +13,7 @@ import {
 } from '@/app/db/schema';
 import { eq } from 'drizzle-orm';
 import PrimaryPositionDiamond from '@/app/components/PrimaryPositionDiamond';
-import TabGrid from '@/app/components/TabGrid';
+import PrintableTablature from '@/app/components/PrintableTablature';
 import PrintButton from '@/app/components/PrintButton';
 import { notFound } from 'next/navigation';
 
@@ -165,11 +165,10 @@ export default async function PrintCompositionPage({ params }: { params: { id: s
                     <span className="font-bold">{m.humanId} — {m.name}</span>
                     <span className="text-[10px] uppercase text-stone-600">{m.function}</span>
                   </div>
-                  <TabGrid
+                  <PrintableTablature
                     stringCount={stringCount}
                     pitches={pitches}
                     columns={tabCols}
-                    readOnly
                   />
                 </div>
               );
