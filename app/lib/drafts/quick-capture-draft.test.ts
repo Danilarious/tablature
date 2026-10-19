@@ -68,6 +68,11 @@ describe('Quick Capture draft storage', () => {
     });
   });
 
+  it('normalizes legacy duration labels without discarding the draft', () => {
+    const legacy = { ...draft(), tabColumns: [{ id: 'c1', notes: [], duration: 'quarter' }] };
+    expect(parseDraft(JSON.stringify(legacy))?.tabColumns[0].duration).toBe('1/4');
+  });
+
   it('does not save an empty draft and never clears an existing one on empty state', () => {
     const s = memoryStorage();
     saveDraft(s, draft());

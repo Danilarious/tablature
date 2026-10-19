@@ -96,6 +96,22 @@ describe('TAB input and fretboard clicks reference the same canonical string ind
     expect(clicks).toEqual([[5, 7]]);
   });
 
+  it('hides unselected open strings in a read-only fretboard map', () => {
+    const tree = FretboardEditor({
+      stringCount: 6,
+      pitches: STANDARD_6,
+      mode: 'map',
+      mapNotes: [{ stringIndex: 5, fret: 0 }],
+      readOnly: true,
+    });
+    const openButtons: React.ReactElement<any>[] = [];
+    walk(tree, (el) => {
+      if (el.type === 'button' && el.props['data-tab-fret'] === undefined && /open:|at capo/.test(el.props.title ?? '')) openButtons.push(el);
+    });
+    expect(openButtons).toHaveLength(6);
+    expect(openButtons.filter((button) => !String(button.props.className).includes('opacity-0'))).toHaveLength(1);
+  });
+
   it('with a capo, a fretboard click records the capo-relative TAB fret on the same index', () => {
     const clicks: [number, number][] = [];
     const fbTree = FretboardEditor({

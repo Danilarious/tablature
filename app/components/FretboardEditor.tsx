@@ -134,7 +134,9 @@ export default function FretboardEditor({
                       className={`w-7 h-7 rounded-full flex items-center justify-center font-mono text-xs transition-colors border ${
                         openSelected
                           ? 'bg-stone-900 text-stone-100 border-stone-900 font-bold shadow'
-                          : 'bg-white text-stone-700 border-stone-300 hover:border-stone-800'
+                          : readOnly
+                            ? 'opacity-0 border-transparent'
+                            : 'bg-white text-stone-700 border-stone-300 hover:border-stone-800'
                       }`}
                       title={`String ${stringNumber} ${capoFret && capoFret > 0 ? 'at capo (TAB 0)' : 'open'}: ${openSounding}`}
                     >

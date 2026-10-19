@@ -62,6 +62,15 @@ describe('runtime validation schemas', () => {
     expect(() => tabDataSchema.parse([{ id: 'c1', notes: [{ stringIndex: 0, fret: 'o' }] }])).toThrow();
   });
 
+  it('normalizes legacy word-form TAB durations', () => {
+    const parsed = tabDataSchema.parse([
+      { id: 'c1', notes: [], duration: 'quarter' },
+      { id: 'c2', notes: [], duration: 'eighth' },
+      { id: 'c3', notes: [], duration: 'dotted-quarter' },
+    ]);
+    expect(parsed.map((column) => column.duration)).toEqual(['1/4', '1/8', 'dotted 1/4']);
+  });
+
   it('parses stored JSON safely', () => {
     expect(parseStoredJson('["E2","A2"]', storedPitchesSchema)).toEqual(['E2', 'A2']);
     expect(parseStoredJson('not json', storedPitchesSchema)).toBeNull();

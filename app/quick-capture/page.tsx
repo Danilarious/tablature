@@ -382,6 +382,14 @@ export default function QuickCapturePage() {
     }
 
     setSavedCapture(saved);
+    if (saved.composition) {
+      setCompositions((current) => current.some((composition) => composition.id === saved.composition!.id)
+        ? current
+        : [saved.composition, ...current]);
+      setCompositionMode('existing');
+      setSelectedCompositionId(saved.composition.id);
+      setNewCompositionTitle('');
+    }
     clearDraft(browserStorage());
     lastPersistedDraft.current = null;
     setDraftNotice(null);

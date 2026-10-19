@@ -172,6 +172,19 @@ export const tabNoteSchema = z.object({
 });
 
 export const TAB_DURATIONS = ['1', '1/2', '1/4', '1/8', '1/16', 'dotted 1/4', 'triplet 1/8'] as const;
+const LEGACY_DURATION_ALIASES: Record<string, (typeof TAB_DURATIONS)[number]> = {
+  whole: '1',
+  half: '1/2',
+  quarter: '1/4',
+  eighth: '1/8',
+  sixteenth: '1/16',
+  'dotted-quarter': 'dotted 1/4',
+  'triplet-eighth': 'triplet 1/8',
+};
+export const tabDurationSchema = z.preprocess(
+  (value) => (typeof value === 'string' ? LEGACY_DURATION_ALIASES[value] ?? value : value),
+  z.enum(TAB_DURATIONS)
+);
 export const TAB_BARLINES = ['single', 'double', 'final'] as const;
 export const TAB_COLUMN_KINDS = ['regular', 'grace'] as const;
 
@@ -179,7 +192,7 @@ export const tabColumnSchema = z.object({
   id: z.string().min(1).max(100),
   notes: z.array(tabNoteSchema).max(MAX_STRINGS),
   /** null/absent = free rhythm. */
-  duration: z.enum(TAB_DURATIONS).nullable().optional(),
+  duration: tabDurationSchema.nullable().optional(),
   /** Technique into/out of this event, rendered with familiar TAB symbols. */
   technique: z.string().trim().max(60).nullable().optional(),
   /** Explicit rest column (no notes sound). */
