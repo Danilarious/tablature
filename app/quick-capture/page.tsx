@@ -430,6 +430,15 @@ export default function QuickCapturePage() {
     resetCaptureFields();
   };
 
+  const handleTuningNavigation = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (hasUnuploadedMedia(pendingMedia)) {
+      event.preventDefault();
+      window.alert('Save this idea before leaving to edit tunings. Kept recordings and files remain only in this capture until the idea is saved.');
+      return;
+    }
+    saveDraft(browserStorage(), { ...currentDraft, savedAt: Date.now() });
+  };
+
   const failedMedia = pendingMedia.filter((m) => m.status === 'failed');
 
   if (loading) {
@@ -622,7 +631,7 @@ export default function QuickCapturePage() {
           </select>
           <Link
             href="/tunings"
-            onClick={() => saveDraft(browserStorage(), { ...currentDraft, savedAt: Date.now() })}
+            onClick={handleTuningNavigation}
             className="inline-block text-[10px] text-stone-600 underline hover:text-stone-900"
           >
             Add or edit tunings (draft retained)

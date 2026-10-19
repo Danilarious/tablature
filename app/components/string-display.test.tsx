@@ -113,6 +113,23 @@ describe('TAB input and fretboard clicks reference the same canonical string ind
     expect(openButtons.filter((button) => !String(button.props.className).includes('opacity-0'))).toHaveLength(1);
   });
 
+  it('does not duplicate a TAB-zero marker at the physical capo fret', () => {
+    const tree = FretboardEditor({
+      stringCount: 6,
+      pitches: STANDARD_6,
+      capoFrets: [2, 2, 2, 2, 2, 2],
+      mode: 'map',
+      mapNotes: [{ stringIndex: 0, fret: 0 }],
+      readOnly: true,
+    });
+    const visibleMarkers: React.ReactElement<any>[] = [];
+    walk(tree, (el) => {
+      if (el.type === 'button' && !String(el.props.className).includes('opacity-0')) visibleMarkers.push(el);
+    });
+    expect(visibleMarkers).toHaveLength(1);
+    expect(visibleMarkers[0].props.title).toContain('at capo (TAB 0)');
+  });
+
   it('extends a printed map to its highest physical fret, including capo offset', () => {
     expect(mappedFretboardExtent([{ stringIndex: 0, fret: 16 }], [], 15)).toBe(16);
     expect(mappedFretboardExtent([{ stringIndex: 0, fret: 16 }], [5], 15)).toBe(21);

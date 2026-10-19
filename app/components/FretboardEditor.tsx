@@ -165,7 +165,7 @@ export default function FretboardEditor({
                       const sounding = calculateSoundingPitch(openPitch, 0, neckFret);
                       const tabFret = tabFretFromNeckFret(neckFret, capoFret);
                       const capoHere = capoFret === neckFret;
-                      const selected = tabFret !== null && isSelected(strIdx, tabFret, capoFret);
+                      const selected = tabFret !== null && tabFret > 0 && isSelected(strIdx, tabFret, capoFret);
 
                       return (
                         <div
