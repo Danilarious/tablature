@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { capoConfigurations, compositions, compositionMotifs, compositionSetups, motifs, setups } from '../../db/schema';
+import { captureReceipts, attachments, capoConfigurations, compositions, compositionMotifs, compositionSetups, motifs, setups } from '../../db/schema';
 import { createTestDb, insertInstrument, insertTuning } from '../../test/test-db';
-import { createQuickCapture } from './quick-capture';
+import { createQuickCapture, placeMotif } from './quick-capture';
 
 function counts(db: ReturnType<typeof createTestDb>['db']) {
   return {
@@ -158,4 +158,102 @@ describe('createQuickCapture (single transaction)', () => {
     expect(counts(db)).toEqual({ capos: 0, setups: 0, motifs: 0 });
     expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
   });
+});
+
+describe('section and attachment transaction', () => {
+  it('creates a real section and rolls everything back on attachment failure', () => {
+    const { db, sqlite } = seed();
+    const input = { ...validInput, destination: { kind: 'new', title: 'Song', sectionName: 'Verse' } };
+    const file = { id: 'file-one', parentType: 'motif', parentId: '', displayName: 'take', filePath: 'take.wav', mimeType: 'audio/wav', fileSize: 8, description: 'Verse take', createdAt: 1 };
+    sqlite.exec(`CREATE TRIGGER fail_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'attachment failed'); END;`);
+    expect(() => createQuickCapture(db, input, [file])).toThrow(/attachment failed/);
+    expect(counts(db)).toEqual({ capos: 0, setups: 0, motifs: 0 });
+    expect(db.select().from(compositions).all()).toHaveLength(0);
+    expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
+    expect(db.select().from(compositionSetups).all()).toHaveLength(0);
+    sqlite.exec('DROP TRIGGER fail_attachment');
+    const result = createQuickCapture(db, input, [file]);
+    const comp = db.select().from(compositions).all()[0];
+    expect(JSON.parse(comp.sections!)[0].name).toBe('Verse');
+    expect(result.composition?.id).toBe(comp.id);
+  });
+});
+
+it('places an inbox motif into existing and new compositions without duplication', () => {
+  const { db } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  placeMotif(db, capture.motif.id, { kind: 'existing', compositionId: 'comp-test', sectionName: 'Bridge' });
+  placeMotif(db, capture.motif.id, { kind: 'existing', compositionId: 'comp-test', sectionName: 'Bridge' });
+  const other = placeMotif(db, capture.motif.id, { kind: 'new', title: 'Other song', sectionName: 'Intro' });
+  expect(other.title).toBe('Other song');
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(2);
+  expect(db.select().from(compositionSetups).all()).toHaveLength(2);
+  expect(db.select().from(motifs).all()).toHaveLength(1);
+  expect(() => placeMotif(db, capture.motif.id, { kind: 'existing', compositionId: 'missing' })).toThrow();
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(2);
+});
+
+it('reconciles a committed capture on retry without duplicating any records', () => {
+  const { db } = seed();
+  const input = { ...validInput, captureId: 'edddbbbb-9999-4444-8888-111111111111', destination: { kind: 'new', title: 'One song', sectionName: 'Verse' } };
+  const first = createQuickCapture(db, input);
+  const retry = createQuickCapture(db, input);
+  expect(retry.motif.id).toBe(first.motif.id);
+  expect(retry.composition?.id).toBe(first.composition?.id);
+  expect(retry.replayed).toBe(true);
+  expect(counts(db)).toEqual({ capos: 1, setups: 1, motifs: 1 });
+  expect(db.select().from(compositions).all()).toHaveLength(1);
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(1);
+});
+it('treats legacy null and empty sections as the existing Unsectioned placement', () => {
+  const { db } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  db.insert(compositionMotifs).values({id:'legacy-link', compositionId:'comp-test', motifId:capture.motif.id, sortOrder:0, sectionName:null}).run();
+  placeMotif(db, capture.motif.id, {kind:'existing',compositionId:'comp-test',sectionName:''});
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(1);
+});
+
+it('rejects changed payloads and recording bytes for a shared capture ID', () => {
+  const { db } = seed();
+  const input = { ...validInput, captureId: 'edddbbbb-9999-4444-8888-222222222222', destination: { kind: 'new', title: 'One song', sectionName: 'Verse' } };
+  const file = { id: 'file-one', parentType: 'motif', parentId: '', displayName: 'take.wav', filePath: 'take.wav', mimeType: 'audio/wav', fileSize: 8, description: 'Verse take', createdAt: 1, contentHash: 'original-content' };
+  const first = createQuickCapture(db, input, [file]);
+  expect(createQuickCapture(db, input, [file]).motif.id).toBe(first.motif.id);
+  expect(() => createQuickCapture(db, { ...input, motif: { ...input.motif, name: 'Other tab edit' } }, [file])).toThrow(/different edits or recordings/);
+  expect(() => createQuickCapture(db, input, [{ ...file, contentHash: 'different-content' }])).toThrow(/different edits or recordings/);
+  expect(() => createQuickCapture(db, input, [])).toThrow(/different edits or recordings/);
+  expect(db.select().from(motifs).all()).toHaveLength(1);
+  expect(db.select().from(attachments).all()).toHaveLength(1);
+  expect(db.select().from(captureReceipts).all()).toHaveLength(1);
+});
+it('rolls back the whole capture if the idempotency receipt cannot be inserted', () => {
+  const { db, sqlite } = seed();
+  sqlite.exec(`CREATE TRIGGER fail_receipt BEFORE INSERT ON capture_receipts BEGIN SELECT RAISE(ABORT, 'receipt failed'); END;`);
+  expect(() => createQuickCapture(db, { ...validInput, captureId: 'edddbbbb-9999-4444-8888-333333333333', destination: {kind:'new',title:'Song'} })).toThrow(/receipt failed/);
+  expect(counts(db)).toEqual({capos:0,setups:0,motifs:0});
+  expect(db.select().from(captureReceipts).all()).toHaveLength(0);
+  expect(db.select().from(compositions).all()).toHaveLength(0);
+});
+
+it('preserves malformed legacy sections and rolls back attempted placement', () => {
+  const { db, sqlite } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  sqlite.prepare('UPDATE compositions SET sections = ? WHERE id = ?').run('{broken','comp-test');
+  expect(() => placeMotif(db,capture.motif.id,{kind:'existing',compositionId:'comp-test',sectionName:'Verse'})).toThrow(/preserved/);
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
+  expect(db.select().from(compositions).all()[0].sections).toBe('{broken');
+});
+
+it('rejects malformed sections even when a duplicate legacy placement would be skipped', () => {
+  const { db, sqlite } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  db.insert(compositionMotifs).values({id:'legacy-linked',compositionId:'comp-test',motifId:capture.motif.id,sectionName:null,sortOrder:0}).run();
+  sqlite.prepare('UPDATE compositions SET sections = ? WHERE id = ?').run('{broken','comp-test');
+  expect(() => placeMotif(db,capture.motif.id,{kind:'existing',compositionId:'comp-test',sectionName:''})).toThrow(/preserved/);
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(1);
+  expect(db.select().from(compositions).all()[0].sections).toBe('{broken');
 });

@@ -1,12 +1,16 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import { compositionSectionOptions } from '@/app/lib/music/composition-sections';
+import NewTuning from '@/app/components/NewTuning';
+import MotifPlacement from '@/app/components/MotifPlacement';
+import { tempoTap } from '@/app/lib/music/tap-tempo';
 import FretboardEditor, { FretboardMode, FretboardNote } from '@/app/components/FretboardEditor';
 import TabGrid, { TabColumn } from '@/app/components/TabGrid';
 import AudioRecorder, { CapturedMedia } from '@/app/components/AudioRecorder';
 import { Check, AlertCircle, Save, Guitar, Radio, RotateCcw, Trash2 } from 'lucide-react';
 import Link from 'next/link';
-import { fetchJson, uploadAttachmentFile } from '@/app/lib/api/client';
+import { ApiRequestError, fetchJson, uploadAttachmentFile } from '@/app/lib/api/client';
 import { buildCapoFrets, CapoMode, pickCompatibleTuningId, tabHasNotes } from '@/app/lib/music/compatibility';
 import {
   clearDraft,
@@ -86,6 +90,11 @@ export default function QuickCapturePage() {
   const [fretboardMode, setFretboardMode] = useState<FretboardMode>('map');
   const [fretboardMap, setFretboardMap] = useState<FretboardNote[]>([]);
   const tapTimes = useRef<number[]>([]);
+  const [tapBpm, setTapBpm] = useState<number | null>(null);
+  const [captureConflict, setCaptureConflict] = useState(false);
+  const [saveUncertain, setSaveUncertain] = useState(false);
+  const [captureId, setCaptureId] = useState('');
+  const [mapExtent, setMapExtent] = useState(24);
   const [tapActive, setTapActive] = useState(false);
 
   // Saved result feedback
@@ -134,6 +143,9 @@ export default function QuickCapturePage() {
 
         // Restore an unsaved draft, mapped onto instruments/tunings that exist now.
         const draft = loadDraft(browserStorage());
+        setSaveUncertain(draft?.saveUncertain || false);
+        setCaptureId(draft?.captureId || crypto.randomUUID());
+        setMapExtent(draft?.mapExtent || 24);
         const plan = draft ? resolveDraftRestore(draft, instData, tunData) : null;
         if (draft && plan) {
           setSelectedInstrumentId(plan.instrumentId);
@@ -204,6 +216,9 @@ export default function QuickCapturePage() {
 
   const currentDraft: QuickCaptureDraft = {
     version: 1,
+    captureId: captureId || undefined,
+    saveUncertain,
+    mapExtent,
     savedAt: 0,
     instrumentId: selectedInstrumentId,
     tuningId: currentTuning?.id ?? '',
@@ -335,17 +350,9 @@ export default function QuickCapturePage() {
   };
 
   const registerTempoTap = () => {
-    const now = performance.now();
-    const recent = tapTimes.current;
-    const next = recent.length === 0 || now - recent[recent.length - 1] > 2000
-      ? [now]
-      : [...recent.slice(-7), now];
-    tapTimes.current = next;
-    if (next.length >= 2) {
-      const intervals = next.slice(1).map((value, index) => value - next[index]);
-      const average = intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
-      setTempo(Math.max(20, Math.min(400, Math.round(60000 / average))));
-    }
+    const result = tempoTap(tapTimes.current, performance.now());
+    tapTimes.current = result.times;
+    setTapBpm(result.bpm);
   };
 
   useEffect(() => {
@@ -353,7 +360,7 @@ export default function QuickCapturePage() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code !== 'Space' || event.repeat) return;
       const target = event.target as HTMLElement | null;
-      if (target?.matches('input, textarea, select, button')) return;
+      if (target?.closest('input, textarea, select, button, [contenteditable]')) return;
       event.preventDefault();
       registerTempoTap();
     };
@@ -380,6 +387,7 @@ export default function QuickCapturePage() {
       return;
     }
 
+    setSaveUncertain(true);
     setSaving(true);
     setError(null);
 
@@ -393,10 +401,10 @@ export default function QuickCapturePage() {
         : compositionMode === 'new'
           ? { kind: 'new', title: newCompositionTitle.trim(), sectionName: sectionName.trim() || undefined }
           : { kind: 'inbox' };
-      saved = await fetchJson<SavedCapture>('/api/quick-capture', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      // Persist the retry identifier before sending, including for an otherwise blank idea.
+      saveDraft(browserStorage(), { ...currentDraft, title: motifName.trim() || 'Untitled Quick Capture Idea', saveUncertain: true, savedAt: Date.now() });
+      const capture = {
+          captureId,
           instrumentId: selectedInstrumentId,
           tuningId: currentTuning.id,
           capoFrets: capoType === 'none' ? null : effectiveCapoFrets,
@@ -411,15 +419,23 @@ export default function QuickCapturePage() {
             notes: motifNotes.trim() || 'Captured via Quick Capture mobile/desktop interface.',
           },
           destination,
-        }),
-      });
+      };
+      const form = new FormData();
+      form.set('capture', JSON.stringify(capture));
+      for (const item of pendingMedia) { form.append('files', item.blob, item.filename); form.append('descriptions', item.description); }
+      saved = await fetchJson<SavedCapture>('/api/quick-capture', { method: 'POST', body: form });
+      setPendingMedia(items => items.map(item => ({ ...item, status: 'uploaded' })));
     } catch (err) {
-      // Nothing was written; the draft and any pending media are kept.
-      setError(`Save failed — nothing was saved and your draft is kept: ${err instanceof Error ? err.message : 'unknown error'}`);
+      // A lost response may follow a commit. Freeze the draft until the stable-ID retry reconciles it.
+      setSaveUncertain(err instanceof ApiRequestError && (err.status === 0 || err.status >= 500));
+      setCaptureConflict(err instanceof ApiRequestError && err.status === 409);
+      setError(`Save failed or could not be confirmed. Your draft is kept; retry safely to recover the same capture: ${err instanceof Error ? err.message : 'unknown error'}`);
       setSaving(false);
       return;
     }
 
+    setCaptureConflict(false);
+    setSaveUncertain(false);
     setSavedCapture(saved);
     if (saved.composition) {
       setCompositions((current) => current.some((composition) => composition.id === saved.composition!.id)
@@ -433,7 +449,7 @@ export default function QuickCapturePage() {
     lastPersistedDraft.current = null;
     setDraftNotice(null);
     setSaving(false);
-    await uploadMediaFor(saved.motif.id, pendingMedia);
+
   };
 
   const handleRetryMedia = async () => {
@@ -442,6 +458,7 @@ export default function QuickCapturePage() {
   };
 
   const handleDiscardDraft = () => {
+    if (saving || saveUncertain) { setError('Reconcile the pending save with Retry Save before discarding this draft.'); return; }
     if (!window.confirm('Discard this unsaved Quick Capture draft (TAB, title, tags, notes and kept recordings)?')) return;
     clearDraft(browserStorage());
     lastPersistedDraft.current = null;
@@ -451,6 +468,9 @@ export default function QuickCapturePage() {
   };
 
   const resetCaptureFields = () => {
+    setSaveUncertain(false);
+    setCaptureId(crypto.randomUUID());
+    setMapExtent(24);
     setMotifName('');
     setMotifNotes('');
     setMotifTags('');
@@ -562,19 +582,19 @@ export default function QuickCapturePage() {
           </div>
           <div className="flex items-center gap-3">
             <Link
-              href="/library"
+              href={`/library#motif-${savedMotif.id}`}
               onClick={guardPendingMediaNavigation}
               className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
             >
-              Library
+              View motif
             </Link>
             {savedCapture?.composition && (
               <Link
-                href="/compositions"
+                href={`/compositions#composition-${savedCapture.composition.id}`}
                 onClick={guardPendingMediaNavigation}
                 className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
               >
-                Compositions
+                View composition
               </Link>
             )}
             <Link
@@ -595,6 +615,8 @@ export default function QuickCapturePage() {
         </div>
       )}
 
+      {savedMotif && !savedCapture?.composition && <MotifPlacement motifId={savedMotif.id} />}
+
       {/* Pending / failed media status (motif is already saved when uploads run) */}
       {pendingMedia.length > 0 && (
         <div className="p-3 bg-paper-100 border border-stone-300 rounded text-xs font-mono text-stone-800 space-y-1.5">
@@ -610,6 +632,7 @@ export default function QuickCapturePage() {
               {!savedMotif && (
                 <button
                   type="button"
+                  disabled={saveUncertain}
                   onClick={() => setPendingMedia((prev) => prev.filter((p) => p.localId !== m.localId))}
                   className="text-stone-500 hover:text-stone-900"
                 >
@@ -648,6 +671,9 @@ export default function QuickCapturePage() {
         </div>
       )}
 
+      {captureConflict && <div className="text-sm space-x-3"><a className="underline" href={`/library#motif-${captureId}`}>View already saved motif</a><button className="border p-2" type="button" onClick={() => { setCaptureId(crypto.randomUUID()); setSaveUncertain(false); setCaptureConflict(false); setError(null); }}>Save edited draft as a separate capture</button></div>}
+      {saveUncertain && <p role="status" className="text-sm">The previous save may have completed. Retry Save to recover its result before changing this draft or its recordings.</p>}
+      <fieldset disabled={saveUncertain} className="space-y-6 border-0 min-w-0">
       {/* Physical Setup Bar: Instrument, Tuning, Capo */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-paper-100 border border-stone-300 rounded font-mono text-xs">
         {/* Instrument Selector */}
@@ -689,6 +715,7 @@ export default function QuickCapturePage() {
                 </option>
               ))}
           </select>
+          {currentInstrument && <NewTuning instrument={currentInstrument} pitches={rawPitches} onCreated={(tuning) => { setTunings(rows => [...rows, tuning]); setSelectedTuningId(tuning.id); }} />}
           <Link
             href="/tunings"
             onClick={handleTuningNavigation}
@@ -779,11 +806,13 @@ export default function QuickCapturePage() {
             </button>
             <button
               type="button"
+              disabled={!tapActive}
               onClick={registerTempoTap}
               className="px-3 py-2 bg-stone-900 text-white rounded font-bold"
             >
               TAP
             </button>
+            {tapBpm && <button type="button" className="border p-2" onClick={() => { setTempo(tapBpm); setTapActive(false); }}>Use {tapBpm} BPM</button>}
             <span className="text-stone-500">
               {tapActive ? 'Tap here or press Space away from form fields.' : 'Enable to use the Space bar.'}
             </span>
@@ -799,9 +828,9 @@ export default function QuickCapturePage() {
           </div>
           <div className="grid grid-cols-3 gap-1">
             {([
-              ['inbox', 'Motif Inbox'],
-              ['existing', 'Existing Song'],
-              ['new', 'New Song'],
+              ['inbox', 'Save to Motif Inbox'],
+              ['existing', 'Add to Existing Composition'],
+              ['new', 'Create a New Composition'],
             ] as const).map(([value, label]) => (
               <button
                 key={value}
@@ -847,10 +876,12 @@ export default function QuickCapturePage() {
               />
             </label>
           )}
+          <datalist id="capture-sections">{(() => { const comp = compositions.find(c => c.id === selectedCompositionId); return compositionSectionOptions(comp?.sections).map((section) => <option key={section.id} value={section.name} />); })()}</datalist>
           {compositionMode !== 'inbox' && (
             <label className="space-y-1 block">
               <span className="block text-[11px] text-stone-600">PART / SECTION (OPTIONAL)</span>
               <input
+                list="capture-sections"
                 value={sectionName}
                 onChange={(e) => setSectionName(e.target.value)}
                 placeholder="Intro, Verse 1, B section, transition..."
@@ -889,7 +920,9 @@ export default function QuickCapturePage() {
         />
 
         {/* Interactive Fretboard */}
+        <label className="block text-xs">Available neck extent (frets) <input aria-label="Available neck extent" type="number" min={1} max={36} value={mapExtent} onChange={e => setMapExtent(Math.max(1, Math.min(36, Number(e.target.value) || 24)))} /></label>
         <FretboardEditor
+          maxFret={Math.max(mapExtent, ...fretboardMap.map(n => n.fret + (effectiveCapoFrets[n.stringIndex] || 0)), ...tabColumns.flatMap(c => c.notes.map(n => typeof n.fret === 'number' ? n.fret + (effectiveCapoFrets[n.stringIndex] || 0) : 0)))}
           stringCount={stringCount}
           pitches={rawPitches}
           capoFrets={effectiveCapoFrets}
@@ -983,6 +1016,7 @@ export default function QuickCapturePage() {
           )}
         </div>
       </div>
+      </fieldset>
     </div>
   );
 }

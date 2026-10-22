@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { createHash } from 'crypto';
 import path from 'path';
 import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
@@ -109,10 +110,10 @@ export interface SaveAttachmentOptions {
 export type AttachmentRecord = typeof attachments.$inferSelect;
 
 /** Streams a file to disk and records it. Never leaves an orphan file on failure. */
-export async function saveAttachment(opts: SaveAttachmentOptions): Promise<AttachmentRecord> {
-  const { db, mediaDir, file } = opts;
+export async function stageAttachment(opts: Omit<SaveAttachmentOptions, 'db'>): Promise<AttachmentRecord & { contentHash: string }> {
+  const { mediaDir, file } = opts;
   const maxBytes = opts.maxBytes ?? getMaxUploadBytes();
-  const parentType = assertAttachmentParentExists(db, opts.parentType, opts.parentId);
+  const parentType = opts.parentType;
   const { ext, mime } = resolveMediaType(file.name, file.type);
   if (typeof file.size === 'number' && file.size > maxBytes) {
     throw new HttpError(413, `File is larger than the ${Math.round(maxBytes / 1024 / 1024)} MB upload limit.`);
@@ -126,9 +127,11 @@ export async function saveAttachment(opts: SaveAttachmentOptions): Promise<Attac
   const finalPath = path.join(mediaDir, diskFilename);
 
   let written = 0;
+  const hash = createHash('sha256');
   const limiter = new Transform({
     transform(chunk: Buffer, _enc, cb) {
       written += chunk.length;
+      hash.update(chunk);
       if (written > maxBytes) cb(new HttpError(413, `File is larger than the ${Math.round(maxBytes / 1024 / 1024)} MB upload limit.`));
       else cb(null, chunk);
     },
@@ -156,17 +159,22 @@ export async function saveAttachment(opts: SaveAttachmentOptions): Promise<Attac
     createdAt: Date.now(),
   };
 
+  return { ...record, contentHash: hash.digest('hex') };
+}
+
+export async function saveAttachment(opts: SaveAttachmentOptions): Promise<AttachmentRecord> {
+  assertAttachmentParentExists(opts.db, opts.parentType, opts.parentId);
+  const record = await stageAttachment(opts);
   try {
-    db.transaction((tx) => {
-      // Re-check inside the transaction so a concurrently removed parent cannot be referenced.
-      assertAttachmentParentExists(tx, parentType, opts.parentId);
+    opts.db.transaction((tx) => {
+      assertAttachmentParentExists(tx, opts.parentType, opts.parentId);
       tx.insert(attachments).values(record).run();
     });
-  } catch (err) {
-    safeUnlink(finalPath);
-    throw err;
+    return record;
+  } catch (error) {
+    safeUnlink(path.join(opts.mediaDir, record.filePath));
+    throw error;
   }
-  return record;
 }
 
 function safeUnlink(p: string) {

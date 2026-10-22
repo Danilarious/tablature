@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import MotifPlacement from '@/app/components/MotifPlacement';
+import RecordingList from '@/app/components/RecordingList';
 import PrimaryPositionDiamond from '@/app/components/PrimaryPositionDiamond';
 import {
   Search,
@@ -251,6 +253,7 @@ export default function LibraryPage() {
                   return (
                     <div
                       key={motif.id}
+                      id={`motif-${motif.id}`}
                       className="border border-stone-300 bg-white p-4 rounded flex flex-col justify-between hover:border-stone-800 transition-colors shadow-sm"
                     >
                       <div>
@@ -268,6 +271,9 @@ export default function LibraryPage() {
                           {parentInst && <span className="ml-1.5">• {parentInst.name}</span>}
                         </div>
 
+                        <div className="text-xs my-2">{motif.linkedCompositions?.length ? motif.linkedCompositions.map((id: string) => <Link className="block underline" key={id} href={`/compositions#composition-${id}`}>{compositions.find((c: any) => c.id === id)?.title || 'View linked composition'}</Link>) : 'Unassigned · Motif Inbox'}</div>
+                        <MotifPlacement motifId={motif.id} />
+                        <RecordingList attachments={motif.linkedAttachments || []} />
                         {/* Abbreviated TAB summary */}
                         <div className="bg-paper-100 border border-stone-200 rounded p-2 font-mono text-[10px] text-stone-700 mb-2">
                           <span>{tabCols.length} Columns captured</span>

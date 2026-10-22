@@ -82,7 +82,7 @@ export default function PrintableTablature({
               {system.map((column, columnIndex) => {
                 const absoluteIndex = systemIndex * columnsPerSystem + columnIndex;
                 const caption = [
-                  column.kind === 'grace' ? 'grace' : null,
+                  column.kind === 'grace' ? 'grace →' : null,
                   column.duration,
                   column.technique,
                   column.rest ? 'rest' : null,
@@ -91,7 +91,7 @@ export default function PrintableTablature({
                 return (
                   <div
                     key={column.id || absoluteIndex}
-                    className="flex-1 min-w-0"
+                    className={column.kind === 'grace' ? 'flex-[0.55] min-w-0' : 'flex-1 min-w-0'}
                     style={boundaryStyle(column.barlineAfter)}
                   >
                     <div className="h-6 px-0.5 flex items-center justify-center font-mono text-[8px] text-stone-600 border-b border-stone-300 truncate">
@@ -106,7 +106,7 @@ export default function PrintableTablature({
                             <span className="relative bg-white px-1 text-stone-700 font-serif text-sm">{restGlyph(column.duration)}</span>
                           ) : note ? (
                             <span className={`relative bg-white px-1 font-mono font-bold ${column.kind === 'grace' ? 'text-[8px] -translate-y-1' : 'text-[11px]'}`}>
-                              {note.fret}
+                              {note.fret}{column.technique && <sup className="ml-0.5 font-normal">{column.technique}</sup>}
                             </span>
                           ) : null}
                         </div>

@@ -1,0 +1,18 @@
+{
+  "id": "f0fae2b9-b2c8-446a-a690-9477d97deb0e",
+  "compId": "54a2e9a0-1623-43ba-897f-d257a5f75d6e",
+  "inboxId": "43257d20-9458-4f6b-8af0-c971a58edddf",
+  "errors": [],
+  "checks": "new/existing/inbox capture; failed save recovery; inline tuning; map toggle/reload; notation persistence; placement; composition visibility; print/PDF; audio playback/range",
+  "runtime": "Next.js production build and next start; Chromium",
+  "result": "PASS",
+  "eventCount": 49,
+  "reviewRegressions": [
+    "shared-tab payload and recording conflict retained",
+    "explicit separate capture",
+    "dropped response after commit reconciled",
+    "proxy 504 kept frozen and reconciled",
+    "no duplicated rows or files",
+    "extent preserved"
+  ]
+}
