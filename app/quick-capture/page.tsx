@@ -1,6 +1,9 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import NewTuning from '@/app/components/NewTuning';
+import MotifPlacement from '@/app/components/MotifPlacement';
+import { tempoTap } from '@/app/lib/music/tap-tempo';
 import FretboardEditor, { FretboardMode, FretboardNote } from '@/app/components/FretboardEditor';
 import TabGrid, { TabColumn } from '@/app/components/TabGrid';
 import AudioRecorder, { CapturedMedia } from '@/app/components/AudioRecorder';
@@ -86,6 +89,8 @@ export default function QuickCapturePage() {
   const [fretboardMode, setFretboardMode] = useState<FretboardMode>('map');
   const [fretboardMap, setFretboardMap] = useState<FretboardNote[]>([]);
   const tapTimes = useRef<number[]>([]);
+  const [tapBpm, setTapBpm] = useState<number | null>(null);
+  const [mapExtent, setMapExtent] = useState(24);
   const [tapActive, setTapActive] = useState(false);
 
   // Saved result feedback
@@ -335,17 +340,9 @@ export default function QuickCapturePage() {
   };
 
   const registerTempoTap = () => {
-    const now = performance.now();
-    const recent = tapTimes.current;
-    const next = recent.length === 0 || now - recent[recent.length - 1] > 2000
-      ? [now]
-      : [...recent.slice(-7), now];
-    tapTimes.current = next;
-    if (next.length >= 2) {
-      const intervals = next.slice(1).map((value, index) => value - next[index]);
-      const average = intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
-      setTempo(Math.max(20, Math.min(400, Math.round(60000 / average))));
-    }
+    const result = tempoTap(tapTimes.current, performance.now());
+    tapTimes.current = result.times;
+    setTapBpm(result.bpm);
   };
 
   useEffect(() => {
@@ -353,7 +350,7 @@ export default function QuickCapturePage() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code !== 'Space' || event.repeat) return;
       const target = event.target as HTMLElement | null;
-      if (target?.matches('input, textarea, select, button')) return;
+      if (target?.closest('input, textarea, select, button, [contenteditable]')) return;
       event.preventDefault();
       registerTempoTap();
     };
@@ -393,10 +390,7 @@ export default function QuickCapturePage() {
         : compositionMode === 'new'
           ? { kind: 'new', title: newCompositionTitle.trim(), sectionName: sectionName.trim() || undefined }
           : { kind: 'inbox' };
-      saved = await fetchJson<SavedCapture>('/api/quick-capture', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const capture = {
           instrumentId: selectedInstrumentId,
           tuningId: currentTuning.id,
           capoFrets: capoType === 'none' ? null : effectiveCapoFrets,
@@ -411,8 +405,12 @@ export default function QuickCapturePage() {
             notes: motifNotes.trim() || 'Captured via Quick Capture mobile/desktop interface.',
           },
           destination,
-        }),
-      });
+      };
+      const form = new FormData();
+      form.set('capture', JSON.stringify(capture));
+      for (const item of pendingMedia) { form.append('files', item.blob, item.filename); form.append('descriptions', item.description); }
+      saved = await fetchJson<SavedCapture>('/api/quick-capture', { method: 'POST', body: form });
+      setPendingMedia(items => items.map(item => ({ ...item, status: 'uploaded' })));
     } catch (err) {
       // Nothing was written; the draft and any pending media are kept.
       setError(`Save failed — nothing was saved and your draft is kept: ${err instanceof Error ? err.message : 'unknown error'}`);
@@ -433,7 +431,7 @@ export default function QuickCapturePage() {
     lastPersistedDraft.current = null;
     setDraftNotice(null);
     setSaving(false);
-    await uploadMediaFor(saved.motif.id, pendingMedia);
+
   };
 
   const handleRetryMedia = async () => {
@@ -562,19 +560,19 @@ export default function QuickCapturePage() {
           </div>
           <div className="flex items-center gap-3">
             <Link
-              href="/library"
+              href={`/library#motif-${savedMotif.id}`}
               onClick={guardPendingMediaNavigation}
               className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
             >
-              Library
+              View motif
             </Link>
             {savedCapture?.composition && (
               <Link
-                href="/compositions"
+                href={`/compositions#composition-${savedCapture.composition.id}`}
                 onClick={guardPendingMediaNavigation}
                 className="underline text-emerald-800 hover:text-emerald-950 font-semibold"
               >
-                Compositions
+                View composition
               </Link>
             )}
             <Link
@@ -594,6 +592,8 @@ export default function QuickCapturePage() {
           </div>
         </div>
       )}
+
+      {savedMotif && !savedCapture?.composition && <MotifPlacement motifId={savedMotif.id} />}
 
       {/* Pending / failed media status (motif is already saved when uploads run) */}
       {pendingMedia.length > 0 && (
@@ -689,6 +689,7 @@ export default function QuickCapturePage() {
                 </option>
               ))}
           </select>
+          {currentInstrument && <NewTuning instrument={currentInstrument} pitches={rawPitches} onCreated={(tuning) => { setTunings(rows => [...rows, tuning]); setSelectedTuningId(tuning.id); }} />}
           <Link
             href="/tunings"
             onClick={handleTuningNavigation}
@@ -779,11 +780,13 @@ export default function QuickCapturePage() {
             </button>
             <button
               type="button"
+              disabled={!tapActive}
               onClick={registerTempoTap}
               className="px-3 py-2 bg-stone-900 text-white rounded font-bold"
             >
               TAP
             </button>
+            {tapBpm && <button type="button" className="border p-2" onClick={() => { setTempo(tapBpm); setTapActive(false); }}>Use {tapBpm} BPM</button>}
             <span className="text-stone-500">
               {tapActive ? 'Tap here or press Space away from form fields.' : 'Enable to use the Space bar.'}
             </span>
@@ -799,9 +802,9 @@ export default function QuickCapturePage() {
           </div>
           <div className="grid grid-cols-3 gap-1">
             {([
-              ['inbox', 'Motif Inbox'],
-              ['existing', 'Existing Song'],
-              ['new', 'New Song'],
+              ['inbox', 'Save to Motif Inbox'],
+              ['existing', 'Add to Existing Composition'],
+              ['new', 'Create a New Composition'],
             ] as const).map(([value, label]) => (
               <button
                 key={value}
@@ -847,10 +850,12 @@ export default function QuickCapturePage() {
               />
             </label>
           )}
+          <datalist id="capture-sections">{(() => { const comp = compositions.find(c => c.id === selectedCompositionId); return (comp?.sections ? JSON.parse(comp.sections) : []).map((section: any) => <option key={section.id} value={section.name} />); })()}</datalist>
           {compositionMode !== 'inbox' && (
             <label className="space-y-1 block">
               <span className="block text-[11px] text-stone-600">PART / SECTION (OPTIONAL)</span>
               <input
+                list="capture-sections"
                 value={sectionName}
                 onChange={(e) => setSectionName(e.target.value)}
                 placeholder="Intro, Verse 1, B section, transition..."
@@ -889,7 +894,9 @@ export default function QuickCapturePage() {
         />
 
         {/* Interactive Fretboard */}
+        <label className="block text-xs">Available neck extent (frets) <input aria-label="Available neck extent" type="number" min={1} max={36} value={mapExtent} onChange={e => setMapExtent(Math.max(1, Math.min(36, Number(e.target.value) || 24)))} /></label>
         <FretboardEditor
+          maxFret={Math.max(mapExtent, ...fretboardMap.map(n => n.fret + (effectiveCapoFrets[n.stringIndex] || 0)))}
           stringCount={stringCount}
           pitches={rawPitches}
           capoFrets={effectiveCapoFrets}

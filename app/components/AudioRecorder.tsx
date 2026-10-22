@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Mic, Square, Upload, CheckCircle2, AlertCircle, Paperclip } from 'lucide-react';
+import { instrumentAudioConstraints } from '@/app/lib/media/microphone';
 import { extensionForMime, pickRecorderMimeType } from '@/app/lib/media/pending-media';
 import { uploadAttachmentFile } from '@/app/lib/api/client';
 
@@ -79,15 +80,7 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
   const startRecording = async () => {
     try {
       setStatus(null);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 1,
-          sampleRate: { ideal: 48000 },
-        },
-      });
+      const stream = await navigator.mediaDevices.getUserMedia(instrumentAudioConstraints(navigator.mediaDevices.getSupportedConstraints?.() || {}));
       mediaStreamRef.current = stream;
       const settings = stream.getAudioTracks()[0]?.getSettings();
       setCaptureSettings(settings
@@ -205,7 +198,7 @@ export default function AudioRecorder({ parentType, parentId, onUploaded, onCapt
         />
       </label>
       <div className="text-[10px] text-stone-500">
-        Instrument-friendly capture requests browser gain control, noise suppression, and echo cancellation off.
+        Instrument / Raw Audio mode requests supported browser gain control, noise suppression, and echo cancellation off. Browsers, operating systems, and hardware may still apply processing.
         {captureSettings ? ` ${captureSettings}` : ''}
       </div>
 

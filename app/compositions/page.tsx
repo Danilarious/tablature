@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import RecordingList from '@/app/components/RecordingList';
 import Link from 'next/link';
 import { Music, Plus, Printer, Download, Save, X, Layers, Clock } from 'lucide-react';
 
@@ -113,6 +114,7 @@ export default function CompositionsPage() {
           {compositions.map((comp) => (
             <div
               key={comp.id}
+              id={`composition-${comp.id}`}
               className="border border-stone-300 bg-white rounded p-5 hover:border-stone-800 transition-colors shadow-sm space-y-4"
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-stone-200 pb-3">
@@ -164,6 +166,12 @@ export default function CompositionsPage() {
                 </div>
               </div>
 
+              <div className="space-y-3">{comp.linkedMotifs?.map((motif: any, index: number) => <div key={`${motif.id}-${index}`} className="border p-3">
+                <h3 className="font-bold text-sm">{motif.sectionName || 'Unsectioned'}</h3>
+                <Link className="underline text-sm" href={`/library#motif-${motif.id}`}>{motif.humanId} · {motif.name}</Link>
+                <Link className="block underline text-xs" href={`/print/motif/${motif.id}`}>View / print motif</Link>
+                <RecordingList attachments={motif.attachments || []} />
+              </div>)}</div>
               {/* Piece Map */}
               {comp.pieceMap && (
                 <div className="space-y-1">

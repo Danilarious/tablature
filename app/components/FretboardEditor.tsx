@@ -92,9 +92,9 @@ export default function FretboardEditor({
       </div>
 
       <div className="overflow-x-auto p-4 bg-paper-50">
-        <div className="min-w-[700px] flex flex-col">
+        <div className="min-w-[700px] flex flex-col print:min-w-0">
           <div className="flex pl-20 border-b border-stone-300 pb-1 text-[11px] font-mono text-stone-600">
-            <div className="w-10 text-center font-bold text-stone-900">0</div>
+            <div className="w-10 print:flex-1 print:w-auto print:min-w-0 text-center font-bold text-stone-900">0</div>
             {Array.from({ length: maxFret }, (_, i) => i + 1).map((fret) => (
               <div
                 key={fret}
@@ -126,7 +126,7 @@ export default function FretboardEditor({
                     </div>
                   </div>
 
-                  <div className="w-10 flex justify-center">
+                  <div className="w-10 print:flex-1 print:w-auto print:min-w-0 flex justify-center">
                     <button
                       type="button"
                       onClick={() => clickNote(strIdx, 0)}
@@ -172,7 +172,8 @@ export default function FretboardEditor({
                               type="button"
                               onClick={() => clickNote(strIdx, tabFret)}
                               disabled={readOnly}
-                              className={`w-6 h-6 rounded-full flex items-center justify-center font-mono text-[10px] transition-all ${
+                              aria-pressed={selected}
+                              className={`w-6 h-6 print:w-full print:text-[7px] rounded-full flex items-center justify-center font-mono text-[10px] transition-all ${
                                 selected
                                   ? 'bg-stone-950 text-stone-100 font-bold scale-110 shadow ring-2 ring-stone-900'
                                   : readOnly
@@ -200,7 +201,7 @@ export default function FretboardEditor({
           </div>
 
           <div className="flex pl-20 pt-2 border-t border-stone-300 text-[10px] font-mono text-stone-500">
-            <div className="w-10" />
+            <div className="w-10 print:flex-1 print:w-auto print:min-w-0" />
             {Array.from({ length: maxFret }, (_, i) => i + 1).map((fret) => (
               <div key={fret} className="flex-1 flex justify-center items-center">
                 {fret === 12 ? (

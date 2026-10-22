@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { apiErrorResponse } from '@/app/lib/api/http';
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase } from '@/app/db/client';
-import { compositions, compositionMotifs, compositionPositions, compositionSetups } from '@/app/db/schema';
+import { compositions, compositionMotifs, compositionPositions, compositionSetups, motifs, attachments } from '@/app/db/schema';
 import { eq, desc } from 'drizzle-orm';
 
 function generateNextHumanId(existing: string[], prefix: string): string {
@@ -22,7 +22,10 @@ export async function GET() {
   try {
     const { db } = getDatabase();
     const rows = await db.select().from(compositions).orderBy(desc(compositions.createdAt));
-    return NextResponse.json(rows);
+    const links = db.select().from(compositionMotifs).all();
+    const ideas = db.select().from(motifs).all();
+    const media = db.select().from(attachments).all();
+    return NextResponse.json(rows.map(c => ({ ...c, linkedMotifs: links.filter(l => l.compositionId === c.id).sort((a,b) => a.sortOrder - b.sortOrder).map(l => ({ ...ideas.find(m => m.id === l.motifId), sectionName: l.sectionName, attachments: media.filter(a => a.parentType === 'motif' && a.parentId === l.motifId) })) })));
   } catch (error) {
     return apiErrorResponse(error, "compositions");
   }

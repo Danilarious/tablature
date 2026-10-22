@@ -1,3 +1,6 @@
+import MotifPlacement from '@/app/components/MotifPlacement';
+import RecordingList from '@/app/components/RecordingList';
+import { attachments, compositionMotifs, compositions } from '@/app/db/schema';
 import React from 'react';
 import { getDatabase } from '@/app/db/client';
 import { motifs, setups, tunings, instruments, capoConfigurations } from '@/app/db/schema';
@@ -40,6 +43,9 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
   const capoFrets = capo?.stringFrets ? JSON.parse(capo.stringFrets) : [];
   const printFretboardExtent = mappedFretboardExtent(fretboardMap, capoFrets);
 
+  const media = db.select().from(attachments).where(eq(attachments.parentId, motif.id)).all().filter(a => a.parentType === 'motif');
+  const links = db.select().from(compositionMotifs).where(eq(compositionMotifs.motifId, motif.id)).all();
+  const allComps = db.select().from(compositions).all();
   return (
     <div className="bg-white min-h-screen text-black font-sans p-4 sm:p-8">
       {/* Onscreen bar */}
@@ -98,6 +104,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
           </div>
         </div>
 
+        <div className="space-y-2 text-xs">{links.length ? links.map(l => <a className="block underline" key={l.id} href={`/compositions#composition-${l.compositionId}`}>{allComps.find(c => c.id === l.compositionId)?.title} · {l.sectionName || 'Unsectioned'}</a>) : <p>Unassigned · Motif Inbox</p>}<MotifPlacement motifId={motif.id} /><RecordingList attachments={media} /></div>
         {/* Primary Transcription Staff */}
         <div className="space-y-2">
           <span className="font-bold tracking-wider uppercase text-[10px] text-stone-600 block">
@@ -117,6 +124,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
             <span className="font-bold tracking-wider uppercase text-[10px] text-stone-600 block">
               FRETBOARD MAP / TONAL AREA
             </span>
+            <p className="text-[10px]">{Array.from({ length: stringCount }, (_, index) => { const selected = fretboardMap.filter((n: any) => n.stringIndex === index); return selected.length ? `S${stringCount - index}: ${selected.map((n: any) => `TAB ${n.fret}`).join(', ')}` : null; }).filter(Boolean).join(' · ')}</p>
             <FretboardEditor
               stringCount={stringCount}
               pitches={pitches}

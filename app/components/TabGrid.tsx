@@ -179,6 +179,7 @@ export default function TabGrid({
               <option value="final">Final</option>
             </select>
           </label>
+          <span className="text-stone-500">Grace notes lead into the next primary event; techniques connect toward the next note.</span>
           <span className="text-stone-500 ml-auto self-center">Editing event {activeColumnIndex + 1}</span>
         </div>
       )}

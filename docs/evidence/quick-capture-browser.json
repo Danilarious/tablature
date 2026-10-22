@@ -1,0 +1,10 @@
+{
+  "id": "e6c9a814-ec17-4f4e-a6d7-5428ccde361b",
+  "compId": "6dbc908d-82af-4dac-a3ca-cfd51ade9751",
+  "inboxId": "1943fd61-ab2b-4e79-be75-362f8cf8022d",
+  "errors": [],
+  "checks": "new/existing/inbox capture; failed save recovery; inline tuning; map toggle/reload; notation persistence; placement; composition visibility; print/PDF; audio playback/range",
+  "runtime": "Next.js production build and next start; Chromium",
+  "result": "PASS",
+  "eventCount": 49
+}
