@@ -199,3 +199,10 @@ export const reviewFlags = sqliteTable('review_flags', {
   createdAt: integer('created_at').notNull(),
   resolvedAt: integer('resolved_at'),
 });
+
+// Exact request receipts make retries safe across dropped responses and multiple draft tabs.
+export const captureReceipts = sqliteTable('capture_receipts', {
+  captureId: text('capture_id').primaryKey().references(() => motifs.id, { onDelete: 'cascade' }),
+  fingerprint: text('fingerprint').notNull(),
+  result: text('result').notNull(),
+});

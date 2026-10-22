@@ -52,7 +52,7 @@ describe('migrations on a fresh database', () => {
   it('creates the full schema from migrations only', () => {
     const db = new Database(':memory:');
     const result = applyMigrations(db, MIGRATIONS);
-    expect(result.applied).toEqual(['0000_baseline', '0001_review_flags_string_provenance', '0002_canonical_banjo_string_order', '0003_quick_capture_v1_1']);
+    expect(result.applied).toEqual(['0000_baseline', '0001_review_flags_string_provenance', '0002_canonical_banjo_string_order', '0003_quick_capture_v1_1', '0004_capture_receipts']);
     expect(result.backupPath).toBeNull();
     const cols = (db.prepare(`PRAGMA table_info(string_products)`).all() as { name: string }[]).map((c) => c.name);
     expect(cols).toEqual(expect.arrayContaining(['catalog_id', 'unit_weight_source', 'source_note', 'source_url', 'verified_at', 'unit_weight']));
@@ -80,7 +80,7 @@ describe('upgrading a pre-migration (legacy) database', () => {
     const backupDir = path.join(tmp, 'backups');
     const result = applyMigrations(db, MIGRATIONS, { backupDir });
     expect(result.adoptedLegacy).toBe(true);
-    expect(result.applied).toEqual(['0001_review_flags_string_provenance', '0002_canonical_banjo_string_order', '0003_quick_capture_v1_1']);
+    expect(result.applied).toEqual(['0001_review_flags_string_provenance', '0002_canonical_banjo_string_order', '0003_quick_capture_v1_1', '0004_capture_receipts']);
 
     // Pre-migration backup holds the untouched original.
     expect(result.backupPath && fs.existsSync(result.backupPath)).toBe(true);

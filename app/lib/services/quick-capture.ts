@@ -1,8 +1,9 @@
+import { createHash } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import {
-  setups,
+  captureReceipts,
   attachments,
   motifs,
   compositions,
@@ -126,18 +127,17 @@ export function linkCapture(
   db.update(compositions).set({ sections: JSON.stringify(sections), updatedAt: Date.now() }).where(eq(compositions.id, composition.id)).run();
 }
 
-export function createQuickCapture(db: SyncDb, rawInput: unknown, media: (typeof attachments.$inferSelect)[] = []): QuickCaptureResult {
+export function createQuickCapture(db: SyncDb, rawInput: unknown, media: ((typeof attachments.$inferSelect) & { contentHash?: string })[] = []): QuickCaptureResult {
   const input = quickCaptureInputSchema.parse(rawInput);
   return db.transaction((tx) => {
+    const fingerprint = createHash('sha256').update(JSON.stringify({ input, media: media.map(file => ({ name: file.displayName, mime: file.mimeType, size: file.fileSize, description: file.description, hash: file.contentHash || null })) })).digest('hex');
     if (input.captureId) {
-      const existing = tx.select().from(motifs).where(eq(motifs.id, input.captureId)).get();
-      if (existing) {
-        const setup = existing.setupId ? tx.select().from(setups).where(eq(setups.id, existing.setupId)).get() : null;
-        if (!setup) throw new HttpError(409, 'Capture identifier already belongs to another record.');
-        const link = tx.select().from(compositionMotifs).where(eq(compositionMotifs.motifId, existing.id)).get();
-        const composition = link ? tx.select().from(compositions).where(eq(compositions.id, link.compositionId)).get() : null;
-        return { motif: existing as QuickCaptureResult['motif'], setupId: setup.id, setupReused: true, capoConfigId: setup.capoConfigId, composition: composition ? { id: composition.id, humanId: composition.humanId, title: composition.title } : null, replayed: true };
+      const receipt = tx.select().from(captureReceipts).where(eq(captureReceipts.captureId, input.captureId)).get();
+      if (receipt) {
+        if (receipt.fingerprint !== fingerprint) throw new HttpError(409, 'This capture was saved from another request with different edits or recordings. Your current draft and recordings are retained. View the saved motif, or save this edited draft as a separate capture.');
+        return { ...JSON.parse(receipt.result) as QuickCaptureResult, replayed: true };
       }
+      if (tx.select().from(motifs).where(eq(motifs.id, input.captureId)).get()) throw new HttpError(409, 'Capture identifier already belongs to another record.');
     }
     const capoConfigId = input.capoFrets ? findOrCreateCapo(tx, input.capoFrets, input.capoName) : null;
     const { setup, reused } = findOrCreateSetup(tx, {
@@ -167,7 +167,9 @@ export function createQuickCapture(db: SyncDb, rawInput: unknown, media: (typeof
     }
 
     for (const file of media) tx.insert(attachments).values({ ...file, parentType: 'motif', parentId: motif.id }).run();
-    return { motif, setupId: setup.id!, setupReused: reused, capoConfigId, composition };
+    const result = { motif, setupId: setup.id!, setupReused: reused, capoConfigId, composition };
+    if (input.captureId) tx.insert(captureReceipts).values({ captureId: input.captureId, fingerprint, result: JSON.stringify(result) }).run();
+    return result;
   });
 }
 

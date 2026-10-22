@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { createHash } from 'crypto';
 import path from 'path';
 import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
@@ -109,7 +110,7 @@ export interface SaveAttachmentOptions {
 export type AttachmentRecord = typeof attachments.$inferSelect;
 
 /** Streams a file to disk and records it. Never leaves an orphan file on failure. */
-export async function stageAttachment(opts: Omit<SaveAttachmentOptions, 'db'>): Promise<AttachmentRecord> {
+export async function stageAttachment(opts: Omit<SaveAttachmentOptions, 'db'>): Promise<AttachmentRecord & { contentHash: string }> {
   const { mediaDir, file } = opts;
   const maxBytes = opts.maxBytes ?? getMaxUploadBytes();
   const parentType = opts.parentType;
@@ -126,9 +127,11 @@ export async function stageAttachment(opts: Omit<SaveAttachmentOptions, 'db'>): 
   const finalPath = path.join(mediaDir, diskFilename);
 
   let written = 0;
+  const hash = createHash('sha256');
   const limiter = new Transform({
     transform(chunk: Buffer, _enc, cb) {
       written += chunk.length;
+      hash.update(chunk);
       if (written > maxBytes) cb(new HttpError(413, `File is larger than the ${Math.round(maxBytes / 1024 / 1024)} MB upload limit.`));
       else cb(null, chunk);
     },
@@ -156,7 +159,7 @@ export async function stageAttachment(opts: Omit<SaveAttachmentOptions, 'db'>): 
     createdAt: Date.now(),
   };
 
-  return record;
+  return { ...record, contentHash: hash.digest('hex') };
 }
 
 export async function saveAttachment(opts: SaveAttachmentOptions): Promise<AttachmentRecord> {

@@ -90,6 +90,7 @@ export default function QuickCapturePage() {
   const [fretboardMap, setFretboardMap] = useState<FretboardNote[]>([]);
   const tapTimes = useRef<number[]>([]);
   const [tapBpm, setTapBpm] = useState<number | null>(null);
+  const [captureConflict, setCaptureConflict] = useState(false);
   const [saveUncertain, setSaveUncertain] = useState(false);
   const [captureId, setCaptureId] = useState('');
   const [mapExtent, setMapExtent] = useState(24);
@@ -425,12 +426,14 @@ export default function QuickCapturePage() {
       setPendingMedia(items => items.map(item => ({ ...item, status: 'uploaded' })));
     } catch (err) {
       // A lost response may follow a commit. Freeze the draft until the stable-ID retry reconciles it.
-      setSaveUncertain(err instanceof ApiRequestError && err.status === 0);
+      setSaveUncertain(err instanceof ApiRequestError && (err.status === 0 || err.status >= 500));
+      setCaptureConflict(err instanceof ApiRequestError && err.status === 409);
       setError(`Save failed or could not be confirmed. Your draft is kept; retry safely to recover the same capture: ${err instanceof Error ? err.message : 'unknown error'}`);
       setSaving(false);
       return;
     }
 
+    setCaptureConflict(false);
     setSaveUncertain(false);
     setSavedCapture(saved);
     if (saved.composition) {
@@ -667,6 +670,7 @@ export default function QuickCapturePage() {
         </div>
       )}
 
+      {captureConflict && <div className="text-sm space-x-3"><a className="underline" href={`/library#motif-${captureId}`}>View already saved motif</a><button className="border p-2" type="button" onClick={() => { setCaptureId(crypto.randomUUID()); setSaveUncertain(false); setCaptureConflict(false); setError(null); }}>Save edited draft as a separate capture</button></div>}
       {saveUncertain && <p role="status" className="text-sm">The previous save may have completed. Retry Save to recover its result before changing this draft or its recordings.</p>}
       <fieldset disabled={saveUncertain} className="space-y-6 border-0 min-w-0">
       {/* Physical Setup Bar: Instrument, Tuning, Capo */}

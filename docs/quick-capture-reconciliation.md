@@ -61,7 +61,12 @@ The fret extent is persisted and also expanded for restored TAB notes. Legacy nu
 sections deduplicate as Unsectioned. In-memory media cannot
 survive closing/reloading the tab; existing navigation guards explain that limitation.
 
-No schema migration. Existing notation JSON and attachment names remain compatible.
+Migration 0004_capture_receipts adds an empty receipt table with a motif foreign key,
+a SHA-256 request fingerprint (including recording bytes and metadata), and the original
+result. Receipt and capture commit together. Changed shared-draft submissions return 409;
+the UI retains edits/media and offers an explicit separate capture action. Ambiguous
+network and 5xx errors keep edits frozen until reconciliation. Existing notation JSON,
+attachment names and user records are untouched.
 Placement adds joins without cloning or modifying motif content, and avoids duplicates
 for the same motif/composition/section. Capture offers new named tuning creation through
 the validated tuning API without replacing another tuning or leaving the draft.

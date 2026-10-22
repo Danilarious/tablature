@@ -65,6 +65,7 @@ try {
   await page.waitForTimeout(600); await page.reload(); await page.getByRole('button',{name:'Create a New Composition',exact:true}).waitFor();
   assert.equal(await page.getByLabel('NEW COMPOSITION TITLE').inputValue(),'Browser acceptance composition');
   assert.equal(await page.getByLabel('Available neck extent',{exact:true}).inputValue(),'32');
+  const sharedDraft = await page.evaluate(() => localStorage.getItem('bxb.quickCapture.draft.v1'));
   const wav=Buffer.alloc(44+16000);wav.write('RIFF');wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(8000,24);wav.writeUInt32LE(16000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(16000,40);
   for(let i=0;i<8000;i++)wav.writeInt16LE(Math.round(Math.sin(i*2*Math.PI*220/8000)*6000),44+i*2);
   for(const name of ['Verse Take One.wav','Verse Take Two.wav']) await page.locator('input[type=file]').setInputFiles({name,mimeType:'audio/wav',buffer:wav});
@@ -78,6 +79,11 @@ try {
   await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();
   await page.getByText(/Save failed/).waitFor();
   assert.equal(await page.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').isDisabled(),true);
+  await page.unroute('**/api/quick-capture');
+  await page.route('**/api/quick-capture',async route => { await route.fetch();await route.fulfill({status:504,contentType:'application/json',body:JSON.stringify({error:'proxy timeout after commit'})}); });
+  const proxyResponse=page.waitForResponse(r=>r.url()===base+'/api/quick-capture' && r.status()===504);
+  await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();await proxyResponse;
+  await page.getByText(/Save failed/).waitFor();assert.equal(await page.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').isDisabled(),true);
   await page.unroute('**/api/quick-capture');
   const savedResponse=page.waitForResponse(r=>r.url()===base+'/api/quick-capture' && r.status()===201);
   await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();
@@ -97,6 +103,21 @@ try {
   await page.screenshot({path:path.join(data,'motif.png'),fullPage:true});
   const media=await (await fetch(base+`/api/attachments?parentType=motif&parentId=${id}`)).json();assert.equal(media.length,2);assert.equal(readdirSync(path.join(data,'media')).filter(name=>!name.startsWith('.')).length,2);
   const range=await fetch(base+'/api/media/'+media[0].filePath,{headers:{Range:'bytes=0-99'}});assert.equal(range.status,206);assert.equal((await range.arrayBuffer()).byteLength,100);
+  // A second tab with the old draft must retain changed edits/media on conflict.
+  const other = await page.context().newPage(); other.setDefaultTimeout(12000);
+  await other.goto(base+'/quick-capture');
+  await other.evaluate(draft => localStorage.setItem('bxb.quickCapture.draft.v1',draft),sharedDraft);
+  await other.reload(); await other.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').fill('Other tab changed idea');
+  await other.locator('input[type=file]').setInputFiles({name:'Other take.wav',mimeType:'audio/wav',buffer:wav});
+  const conflict = other.waitForResponse(r => r.url()===base+'/api/quick-capture' && r.status()===409);
+  await other.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click(); await conflict;
+  await other.getByRole('button',{name:'Save edited draft as a separate capture',exact:true}).waitFor();
+  assert.match(await other.locator('body').innerText(),/Other take.wav/);
+  assert.equal(await other.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').inputValue(),'Other tab changed idea');
+  await other.getByRole('button',{name:'Save edited draft as a separate capture',exact:true}).click();
+  const separate = other.waitForResponse(r=>r.url()===base+'/api/quick-capture' && r.status()===201);
+  await other.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();assert.notEqual((await (await separate).json()).motif.id,id);
+  await other.close();
   // Inbox save then place the same saved motif, and capture directly into an existing section.
   await page.goto(base+'/quick-capture');await page.getByRole('button',{name:'Save to Motif Inbox',exact:true}).waitFor();
   await page.getByRole('button',{name:'Save to Motif Inbox',exact:true}).click();await page.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').fill('Inbox acceptance');
