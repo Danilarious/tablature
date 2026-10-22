@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { capoConfigurations, compositions, compositionMotifs, compositionSetups, motifs, setups } from '../../db/schema';
 import { createTestDb, insertInstrument, insertTuning } from '../../test/test-db';
-import { createQuickCapture } from './quick-capture';
+import { createQuickCapture, placeMotif } from './quick-capture';
 
 function counts(db: ReturnType<typeof createTestDb>['db']) {
   return {
@@ -158,4 +158,38 @@ describe('createQuickCapture (single transaction)', () => {
     expect(counts(db)).toEqual({ capos: 0, setups: 0, motifs: 0 });
     expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
   });
+});
+
+describe('section and attachment transaction', () => {
+  it('creates a real section and rolls everything back on attachment failure', () => {
+    const { db, sqlite } = seed();
+    const input = { ...validInput, destination: { kind: 'new', title: 'Song', sectionName: 'Verse' } };
+    const file = { id: 'file-one', parentType: 'motif', parentId: '', displayName: 'take', filePath: 'take.wav', mimeType: 'audio/wav', fileSize: 8, description: 'Verse take', createdAt: 1 };
+    sqlite.exec(`CREATE TRIGGER fail_attachment BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'attachment failed'); END;`);
+    expect(() => createQuickCapture(db, input, [file])).toThrow(/attachment failed/);
+    expect(counts(db)).toEqual({ capos: 0, setups: 0, motifs: 0 });
+    expect(db.select().from(compositions).all()).toHaveLength(0);
+    expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
+    expect(db.select().from(compositionSetups).all()).toHaveLength(0);
+    sqlite.exec('DROP TRIGGER fail_attachment');
+    const result = createQuickCapture(db, input, [file]);
+    const comp = db.select().from(compositions).all()[0];
+    expect(JSON.parse(comp.sections!)[0].name).toBe('Verse');
+    expect(result.composition?.id).toBe(comp.id);
+  });
+});
+
+it('places an inbox motif into existing and new compositions without duplication', () => {
+  const { db } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  placeMotif(db, capture.motif.id, { kind: 'existing', compositionId: 'comp-test', sectionName: 'Bridge' });
+  placeMotif(db, capture.motif.id, { kind: 'existing', compositionId: 'comp-test', sectionName: 'Bridge' });
+  const other = placeMotif(db, capture.motif.id, { kind: 'new', title: 'Other song', sectionName: 'Intro' });
+  expect(other.title).toBe('Other song');
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(2);
+  expect(db.select().from(compositionSetups).all()).toHaveLength(2);
+  expect(db.select().from(motifs).all()).toHaveLength(1);
+  expect(() => placeMotif(db, capture.motif.id, { kind: 'existing', compositionId: 'missing' })).toThrow();
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(2);
 });
