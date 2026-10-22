@@ -26,7 +26,7 @@ export async function POST(req: Request) {
       let total = 0;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        if (!(file instanceof File)) throw new HttpError(400, 'Expected attachment file.');
+        if (!(file instanceof Blob) || !('name' in file) || typeof file.name !== 'string') throw new HttpError(400, 'Expected attachment file.');
         total += file.size;
         if (total > limit) throw new HttpError(413, 'Capture exceeds upload limit.');
         staged.push(await stageAttachment({ mediaDir, parentType: 'motif', parentId: '', description: String(descriptions[i] || ''), file: { name: file.name, type: file.type, size: file.size, stream: Readable.from(Buffer.from(await file.arrayBuffer())) } }));

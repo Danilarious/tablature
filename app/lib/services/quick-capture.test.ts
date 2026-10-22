@@ -246,3 +246,14 @@ it('preserves malformed legacy sections and rolls back attempted placement', () 
   expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
   expect(db.select().from(compositions).all()[0].sections).toBe('{broken');
 });
+
+it('rejects malformed sections even when a duplicate legacy placement would be skipped', () => {
+  const { db, sqlite } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  db.insert(compositionMotifs).values({id:'legacy-linked',compositionId:'comp-test',motifId:capture.motif.id,sectionName:null,sortOrder:0}).run();
+  sqlite.prepare('UPDATE compositions SET sections = ? WHERE id = ?').run('{broken','comp-test');
+  expect(() => placeMotif(db,capture.motif.id,{kind:'existing',compositionId:'comp-test',sectionName:''})).toThrow(/preserved/);
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(1);
+  expect(db.select().from(compositions).all()[0].sections).toBe('{broken');
+});

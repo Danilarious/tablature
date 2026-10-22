@@ -85,6 +85,13 @@ function createCompositionFromCapture(
   return { id: record.id, humanId: record.humanId, title: record.title };
 }
 
+function storedSections(db: SyncDb, compositionId: string) {
+  const stored = db.select().from(compositions).where(eq(compositions.id, compositionId)).get()!;
+  const sections = parseCompositionSections(stored.sections);
+  if (!sections) throw new HttpError(422, 'This composition has malformed section data. It has been preserved; repair its sections before placing a motif here.');
+  return sections;
+}
+
 export function linkCapture(
   db: SyncDb,
   composition: { id: string; humanId: string; title: string },
@@ -120,9 +127,7 @@ export function linkCapture(
       instrumentRole: 'Primary Instrument',
     }).run();
   }
-  const stored = db.select().from(compositions).where(eq(compositions.id, composition.id)).get()!;
-  const sections = parseCompositionSections(stored.sections);
-  if (!sections) throw new HttpError(422, 'This composition has malformed section data. It has been preserved; repair its sections before placing a motif here.');
+  const sections = storedSections(db, composition.id);
   if (sectionName && !compositionSectionOptions(sections).some((section) => section.name === sectionName)) {
     sections.push({ id: uuidv4(), name: sectionName });
   }
@@ -186,6 +191,7 @@ export function placeMotif(db: SyncDb, motifId: string, rawDestination: unknown)
       ? createCompositionFromCapture(tx, { motif } as unknown as QuickCaptureInput, destination.title)
       : tx.select().from(compositions).where(eq(compositions.id, destination.compositionId)).get();
     if (!composition) throw new HttpError(404, 'Composition not found.');
+    storedSections(tx, composition.id);
     const section = destination.sectionName?.trim() || 'Unsectioned';
     const existing = tx.select().from(compositionMotifs).where(and(eq(compositionMotifs.compositionId, composition.id), eq(compositionMotifs.motifId, motifId))).all();
     if (!existing.some((link) => (link.sectionName?.trim() || 'Unsectioned') === section)) linkCapture(tx, composition, motifId, motif.setupId, section);
