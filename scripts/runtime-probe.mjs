@@ -19,7 +19,8 @@ let browser;
 try {
   for (let i=0; i<100; i++) { try { if ((await fetch(base)).ok) break; } catch {} await new Promise(r => setTimeout(r,200)); }
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox'] });
-  const page = await browser.newPage({ viewport: { width:1440,height:1000 } });
+  const context = await browser.newContext({ viewport: { width:1440,height:1000 } });
+  const page = await context.newPage();
   page.setDefaultTimeout(12000); page.setDefaultNavigationTimeout(15000);
   const errors=[];page.on('pageerror', e => errors.push(e.message));
   console.log('browser started',data);
@@ -129,7 +130,7 @@ try {
   await page.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').fill('Existing destination acceptance');next=page.waitForResponse(r=>r.url()===base+'/api/quick-capture'&&r.status()===201);await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();const existing=await (await next).json();assert.equal(existing.composition.id,compId);
   await page.goto(base+'/print/composition/'+compId);assert.match(await page.locator('body').innerText(),/Existing destination acceptance/);
   assert.deepEqual(errors,[]);assert.ok(!/Error:|Functions cannot be passed|Attempted to call/.test(log),log);
-  writeFileSync(path.join(data,'result.json'),JSON.stringify({data,id,compId,inboxId:inbox.motif.id,errors,checks:'new/existing/inbox capture; failed save recovery; inline tuning; map toggle/reload; notation persistence; placement; composition visibility; print/PDF; audio playback/range'},null,2));
+  writeFileSync(path.join(data,'result.json'),JSON.stringify({data,id,compId,inboxId:inbox.motif.id,errors,checks:'shared-tab conflict and explicit separate save; dropped-response and proxy-504 recovery without duplicates; extent persistence; new/existing/inbox capture; failed save recovery; inline tuning; map toggle/reload; notation persistence; placement; composition visibility; print/PDF; audio playback/range'},null,2));
   console.log('Production runtime and browser acceptance PASS. Evidence:',data);
 } finally {
   await browser?.close();server.kill('SIGTERM');await new Promise(resolve=>server.once('exit',resolve));writeFileSync(path.join(data,'server.log'),log);
