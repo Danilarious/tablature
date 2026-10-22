@@ -193,3 +193,24 @@ it('places an inbox motif into existing and new compositions without duplication
   expect(() => placeMotif(db, capture.motif.id, { kind: 'existing', compositionId: 'missing' })).toThrow();
   expect(db.select().from(compositionMotifs).all()).toHaveLength(2);
 });
+
+it('reconciles a committed capture on retry without duplicating any records', () => {
+  const { db } = seed();
+  const input = { ...validInput, captureId: 'edddbbbb-9999-4444-8888-111111111111', destination: { kind: 'new', title: 'One song', sectionName: 'Verse' } };
+  const first = createQuickCapture(db, input);
+  const retry = createQuickCapture(db, input);
+  expect(retry.motif.id).toBe(first.motif.id);
+  expect(retry.composition?.id).toBe(first.composition?.id);
+  expect(retry.replayed).toBe(true);
+  expect(counts(db)).toEqual({ capos: 1, setups: 1, motifs: 1 });
+  expect(db.select().from(compositions).all()).toHaveLength(1);
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(1);
+});
+it('treats legacy null and empty sections as the existing Unsectioned placement', () => {
+  const { db } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  db.insert(compositionMotifs).values({id:'legacy-link', compositionId:'comp-test', motifId:capture.motif.id, sortOrder:0, sectionName:null}).run();
+  placeMotif(db, capture.motif.id, {kind:'existing',compositionId:'comp-test',sectionName:''});
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(1);
+});

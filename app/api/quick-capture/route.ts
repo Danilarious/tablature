@@ -34,6 +34,7 @@ export async function POST(req: Request) {
     } else input = await readJsonBody(req);
     const { db } = getDatabase();
     const result = createQuickCapture(db, input, staged);
+    if (result.replayed) for (const file of staged) fs.rmSync(path.join(mediaDir, file.filePath), { force: true });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
     for (const file of staged) fs.rmSync(path.join(mediaDir, file.filePath), { force: true });

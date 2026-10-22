@@ -10,6 +10,9 @@ export const QUICK_CAPTURE_DRAFT_KEY = 'bxb.quickCapture.draft.v1';
 
 export const quickCaptureDraftSchema = z.object({
   version: z.literal(1),
+  captureId: z.string().uuid().optional(),
+  saveUncertain: z.boolean().optional(),
+  mapExtent: z.number().int().min(1).max(36).optional(),
   savedAt: z.number(),
   instrumentId: z.string().max(100),
   tuningId: z.string().max(100),

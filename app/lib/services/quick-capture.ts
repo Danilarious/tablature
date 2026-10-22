@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import {
+  setups,
   attachments,
   motifs,
   compositions,
@@ -34,6 +35,7 @@ export const destinationSchema = z.discriminatedUnion('kind', [
  * Any failure rolls back the whole chain, so a failed capture never leaves partial records.
  */
 export const quickCaptureInputSchema = z.object({
+  captureId: z.string().uuid().optional(),
   instrumentId: z.string().min(1).max(100),
   tuningId: z.string().min(1).max(100),
   /** Canonical per-string capo frets (index 0 = bass-side); null/0 = string not capoed. */
@@ -46,6 +48,7 @@ export const quickCaptureInputSchema = z.object({
 export type QuickCaptureInput = z.infer<typeof quickCaptureInputSchema>;
 
 export interface QuickCaptureResult {
+  replayed?: boolean;
   motif: ReturnType<typeof insertMotif>;
   setupId: string;
   setupReused: boolean;
@@ -126,6 +129,16 @@ export function linkCapture(
 export function createQuickCapture(db: SyncDb, rawInput: unknown, media: (typeof attachments.$inferSelect)[] = []): QuickCaptureResult {
   const input = quickCaptureInputSchema.parse(rawInput);
   return db.transaction((tx) => {
+    if (input.captureId) {
+      const existing = tx.select().from(motifs).where(eq(motifs.id, input.captureId)).get();
+      if (existing) {
+        const setup = existing.setupId ? tx.select().from(setups).where(eq(setups.id, existing.setupId)).get() : null;
+        if (!setup) throw new HttpError(409, 'Capture identifier already belongs to another record.');
+        const link = tx.select().from(compositionMotifs).where(eq(compositionMotifs.motifId, existing.id)).get();
+        const composition = link ? tx.select().from(compositions).where(eq(compositions.id, link.compositionId)).get() : null;
+        return { motif: existing as QuickCaptureResult['motif'], setupId: setup.id, setupReused: true, capoConfigId: setup.capoConfigId, composition: composition ? { id: composition.id, humanId: composition.humanId, title: composition.title } : null, replayed: true };
+      }
+    }
     const capoConfigId = input.capoFrets ? findOrCreateCapo(tx, input.capoFrets, input.capoName) : null;
     const { setup, reused } = findOrCreateSetup(tx, {
       instrumentId: input.instrumentId,
@@ -135,6 +148,7 @@ export function createQuickCapture(db: SyncDb, rawInput: unknown, media: (typeof
     });
     const motif = insertMotif(tx, {
       ...input.motif,
+      id: input.captureId,
       setupId: setup.id,
       tuningId: input.tuningId,
       instrumentId: input.instrumentId,
@@ -170,7 +184,7 @@ export function placeMotif(db: SyncDb, motifId: string, rawDestination: unknown)
     if (!composition) throw new HttpError(404, 'Composition not found.');
     const section = destination.sectionName?.trim() || 'Unsectioned';
     const existing = tx.select().from(compositionMotifs).where(and(eq(compositionMotifs.compositionId, composition.id), eq(compositionMotifs.motifId, motifId))).all();
-    if (!existing.some((link) => link.sectionName === section)) linkCapture(tx, composition, motifId, motif.setupId, section);
+    if (!existing.some((link) => (link.sectionName?.trim() || 'Unsectioned') === section)) linkCapture(tx, composition, motifId, motif.setupId, section);
     return composition;
   });
 }

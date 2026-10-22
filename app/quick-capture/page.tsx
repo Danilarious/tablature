@@ -9,7 +9,7 @@ import TabGrid, { TabColumn } from '@/app/components/TabGrid';
 import AudioRecorder, { CapturedMedia } from '@/app/components/AudioRecorder';
 import { Check, AlertCircle, Save, Guitar, Radio, RotateCcw, Trash2 } from 'lucide-react';
 import Link from 'next/link';
-import { fetchJson, uploadAttachmentFile } from '@/app/lib/api/client';
+import { ApiRequestError, fetchJson, uploadAttachmentFile } from '@/app/lib/api/client';
 import { buildCapoFrets, CapoMode, pickCompatibleTuningId, tabHasNotes } from '@/app/lib/music/compatibility';
 import {
   clearDraft,
@@ -90,6 +90,8 @@ export default function QuickCapturePage() {
   const [fretboardMap, setFretboardMap] = useState<FretboardNote[]>([]);
   const tapTimes = useRef<number[]>([]);
   const [tapBpm, setTapBpm] = useState<number | null>(null);
+  const [saveUncertain, setSaveUncertain] = useState(false);
+  const [captureId, setCaptureId] = useState('');
   const [mapExtent, setMapExtent] = useState(24);
   const [tapActive, setTapActive] = useState(false);
 
@@ -139,6 +141,9 @@ export default function QuickCapturePage() {
 
         // Restore an unsaved draft, mapped onto instruments/tunings that exist now.
         const draft = loadDraft(browserStorage());
+        setSaveUncertain(draft?.saveUncertain || false);
+        setCaptureId(draft?.captureId || crypto.randomUUID());
+        setMapExtent(draft?.mapExtent || 24);
         const plan = draft ? resolveDraftRestore(draft, instData, tunData) : null;
         if (draft && plan) {
           setSelectedInstrumentId(plan.instrumentId);
@@ -209,6 +214,9 @@ export default function QuickCapturePage() {
 
   const currentDraft: QuickCaptureDraft = {
     version: 1,
+    captureId: captureId || undefined,
+    saveUncertain,
+    mapExtent,
     savedAt: 0,
     instrumentId: selectedInstrumentId,
     tuningId: currentTuning?.id ?? '',
@@ -377,6 +385,7 @@ export default function QuickCapturePage() {
       return;
     }
 
+    setSaveUncertain(true);
     setSaving(true);
     setError(null);
 
@@ -390,7 +399,10 @@ export default function QuickCapturePage() {
         : compositionMode === 'new'
           ? { kind: 'new', title: newCompositionTitle.trim(), sectionName: sectionName.trim() || undefined }
           : { kind: 'inbox' };
+      // Persist the retry identifier before sending, including for an otherwise blank idea.
+      saveDraft(browserStorage(), { ...currentDraft, title: motifName.trim() || 'Untitled Quick Capture Idea', saveUncertain: true, savedAt: Date.now() });
       const capture = {
+          captureId,
           instrumentId: selectedInstrumentId,
           tuningId: currentTuning.id,
           capoFrets: capoType === 'none' ? null : effectiveCapoFrets,
@@ -412,12 +424,14 @@ export default function QuickCapturePage() {
       saved = await fetchJson<SavedCapture>('/api/quick-capture', { method: 'POST', body: form });
       setPendingMedia(items => items.map(item => ({ ...item, status: 'uploaded' })));
     } catch (err) {
-      // Nothing was written; the draft and any pending media are kept.
-      setError(`Save failed — nothing was saved and your draft is kept: ${err instanceof Error ? err.message : 'unknown error'}`);
+      // A lost response may follow a commit. Freeze the draft until the stable-ID retry reconciles it.
+      setSaveUncertain(err instanceof ApiRequestError && err.status === 0);
+      setError(`Save failed or could not be confirmed. Your draft is kept; retry safely to recover the same capture: ${err instanceof Error ? err.message : 'unknown error'}`);
       setSaving(false);
       return;
     }
 
+    setSaveUncertain(false);
     setSavedCapture(saved);
     if (saved.composition) {
       setCompositions((current) => current.some((composition) => composition.id === saved.composition!.id)
@@ -440,6 +454,7 @@ export default function QuickCapturePage() {
   };
 
   const handleDiscardDraft = () => {
+    if (saving || saveUncertain) { setError('Reconcile the pending save with Retry Save before discarding this draft.'); return; }
     if (!window.confirm('Discard this unsaved Quick Capture draft (TAB, title, tags, notes and kept recordings)?')) return;
     clearDraft(browserStorage());
     lastPersistedDraft.current = null;
@@ -449,6 +464,9 @@ export default function QuickCapturePage() {
   };
 
   const resetCaptureFields = () => {
+    setSaveUncertain(false);
+    setCaptureId(crypto.randomUUID());
+    setMapExtent(24);
     setMotifName('');
     setMotifNotes('');
     setMotifTags('');
@@ -610,6 +628,7 @@ export default function QuickCapturePage() {
               {!savedMotif && (
                 <button
                   type="button"
+                  disabled={saveUncertain}
                   onClick={() => setPendingMedia((prev) => prev.filter((p) => p.localId !== m.localId))}
                   className="text-stone-500 hover:text-stone-900"
                 >
@@ -648,6 +667,8 @@ export default function QuickCapturePage() {
         </div>
       )}
 
+      {saveUncertain && <p role="status" className="text-sm">The previous save may have completed. Retry Save to recover its result before changing this draft or its recordings.</p>}
+      <fieldset disabled={saveUncertain} className="space-y-6 border-0 min-w-0">
       {/* Physical Setup Bar: Instrument, Tuning, Capo */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-paper-100 border border-stone-300 rounded font-mono text-xs">
         {/* Instrument Selector */}
@@ -896,7 +917,7 @@ export default function QuickCapturePage() {
         {/* Interactive Fretboard */}
         <label className="block text-xs">Available neck extent (frets) <input aria-label="Available neck extent" type="number" min={1} max={36} value={mapExtent} onChange={e => setMapExtent(Math.max(1, Math.min(36, Number(e.target.value) || 24)))} /></label>
         <FretboardEditor
-          maxFret={Math.max(mapExtent, ...fretboardMap.map(n => n.fret + (effectiveCapoFrets[n.stringIndex] || 0)))}
+          maxFret={Math.max(mapExtent, ...fretboardMap.map(n => n.fret + (effectiveCapoFrets[n.stringIndex] || 0)), ...tabColumns.flatMap(c => c.notes.map(n => typeof n.fret === 'number' ? n.fret + (effectiveCapoFrets[n.stringIndex] || 0) : 0)))}
           stringCount={stringCount}
           pitches={rawPitches}
           capoFrets={effectiveCapoFrets}
@@ -990,6 +1011,7 @@ export default function QuickCapturePage() {
           )}
         </div>
       </div>
+      </fieldset>
     </div>
   );
 }

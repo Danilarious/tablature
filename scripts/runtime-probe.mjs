@@ -1,7 +1,7 @@
 // Runs a built Next production server against a disposable notebook; never accepts a live data path.
 import { chromium } from 'playwright';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -60,9 +60,11 @@ try {
   await page.getByRole('button',{name:'Create a New Composition',exact:true}).click();
   await page.getByLabel('NEW COMPOSITION TITLE').fill('Browser acceptance composition');
   await page.getByLabel('PART / SECTION (OPTIONAL)').fill('Verse');
+  await page.getByLabel('Available neck extent',{exact:true}).fill('32');
   // Exercise recovery across reload before attaching memory-only recordings.
   await page.waitForTimeout(600); await page.reload(); await page.getByRole('button',{name:'Create a New Composition',exact:true}).waitFor();
   assert.equal(await page.getByLabel('NEW COMPOSITION TITLE').inputValue(),'Browser acceptance composition');
+  assert.equal(await page.getByLabel('Available neck extent',{exact:true}).inputValue(),'32');
   const wav=Buffer.alloc(44+16000);wav.write('RIFF');wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(8000,24);wav.writeUInt32LE(16000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(16000,40);
   for(let i=0;i<8000;i++)wav.writeInt16LE(Math.round(Math.sin(i*2*Math.PI*220/8000)*6000),44+i*2);
   for(const name of ['Verse Take One.wav','Verse Take Two.wav']) await page.locator('input[type=file]').setInputFiles({name,mimeType:'audio/wav',buffer:wav});
@@ -70,9 +72,17 @@ try {
   await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();
   await page.getByText(/Save failed/).waitFor();assert.match(await page.locator('body').innerText(),/Verse Take Two.wav/);
   await page.unroute('**/api/quick-capture');
+  // Let the real server commit, then lose the response: retry must recover the same records.
+  let committed;
+  await page.route('**/api/quick-capture',async route => { const response=await route.fetch();committed=await response.json();await route.abort('failed'); });
+  await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();
+  await page.getByText(/Save failed/).waitFor();
+  assert.equal(await page.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').isDisabled(),true);
+  await page.unroute('**/api/quick-capture');
   const savedResponse=page.waitForResponse(r=>r.url()===base+'/api/quick-capture' && r.status()===201);
   await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();
   const saved=await (await savedResponse).json();await page.getByRole('link',{name:'View motif',exact:true}).waitFor();
+  assert.equal(saved.motif.id,committed.motif.id);assert.equal(saved.composition.id,committed.composition.id);assert.equal(saved.replayed,true);
   const id=saved.motif.id;const compId=saved.composition.id;
   assert.deepEqual(JSON.parse(saved.motif.fretboardMap),[{stringIndex:0,fret:2},{stringIndex:0,fret:7}]);
   const cols=JSON.parse(saved.motif.tabData); assert.equal(cols[0].duration,'1/8');assert.equal(cols[0].kind,'grace');assert.equal(cols[0].technique,'h');assert.equal(cols[0].barlineAfter,'single');assert.equal(cols[2].rest,true);assert.equal(cols.length,49);
@@ -85,7 +95,7 @@ try {
   await page.locator('audio').first().evaluate(async audio => { await audio.play(); });await page.waitForTimeout(250);assert.ok(await page.locator('audio').first().evaluate(a=>a.currentTime)>0);
   await page.pdf({path:path.join(data,'motif.pdf'),format:'Letter',printBackground:true});
   await page.screenshot({path:path.join(data,'motif.png'),fullPage:true});
-  const media=await (await fetch(base+`/api/attachments?parentType=motif&parentId=${id}`)).json();assert.equal(media.length,2);
+  const media=await (await fetch(base+`/api/attachments?parentType=motif&parentId=${id}`)).json();assert.equal(media.length,2);assert.equal(readdirSync(path.join(data,'media')).filter(name=>!name.startsWith('.')).length,2);
   const range=await fetch(base+'/api/media/'+media[0].filePath,{headers:{Range:'bytes=0-99'}});assert.equal(range.status,206);assert.equal((await range.arrayBuffer()).byteLength,100);
   // Inbox save then place the same saved motif, and capture directly into an existing section.
   await page.goto(base+'/quick-capture');await page.getByRole('button',{name:'Save to Motif Inbox',exact:true}).waitFor();

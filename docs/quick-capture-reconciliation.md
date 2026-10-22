@@ -52,7 +52,13 @@ capture stages validated files before opening the synchronous transaction. Captu
 setup, section, composition joins and attachment rows commit together; rejected requests
 remove staged files. A crash before commit can leave an unregistered file, detectable
 by the existing read-only orphan report. No temporary parent record is ever inserted.
-Pending browser blobs remain on the page after a rejected save. In-memory media cannot
+Pending browser blobs remain on the page after a rejected save. A stable UUID is saved
+with the draft before sending and used as the motif ID. Retrying an ambiguously completed
+request returns the committed capture instead of creating another one, and removes any
+newly staged retry files. Draft editing is frozen after a lost response until retry
+reconciles the saved result, so later edits/recordings cannot be silently treated as saved.
+The fret extent is persisted and also expanded for restored TAB notes. Legacy null/blank
+sections deduplicate as Unsectioned. In-memory media cannot
 survive closing/reloading the tab; existing navigation guards explain that limitation.
 
 No schema migration. Existing notation JSON and attachment names remain compatible.
