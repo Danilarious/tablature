@@ -1,4 +1,5 @@
 'use client';
+import { compositionSectionOptions } from '@/app/lib/music/composition-sections';
 import { useEffect, useState } from 'react';
 import { fetchJson } from '@/app/lib/api/client';
 
@@ -25,7 +26,7 @@ export default function MotifPlacement({ motifId, onPlaced }: { motifId: string;
       <label className="block">Destination <select value={kind} onChange={e => setKind(e.target.value)}><option value="existing">Add to Existing Composition</option><option value="new">Create a New Composition</option></select></label>
       {kind === 'existing' ? <label className="block">Composition <select required value={compositionId} onChange={e => setCompositionId(e.target.value)}><option value="">Choose composition</option>{compositions.map(c => <option key={c.id} value={c.id}>{c.humanId} · {c.title}</option>)}</select></label> : <label className="block">New composition title <input required maxLength={300} value={title} onChange={e => setTitle(e.target.value)} /></label>}
       <label className="block">Section <input list={`sections-${motifId}`} placeholder="Choose or name a section" maxLength={200} value={section} onChange={e => setSection(e.target.value)} /></label>
-      <datalist id={`sections-${motifId}`}>{(selected?.sections ? JSON.parse(selected.sections) : []).map((s: any) => <option key={s.id} value={s.name} />)}</datalist>
+      <datalist id={`sections-${motifId}`}>{compositionSectionOptions(selected?.sections).map((s) => <option key={s.id} value={s.name} />)}</datalist>
       <p>{error}</p><button disabled={busy} className="border p-2">{busy ? 'Saving...' : 'Place motif'}</button>
     </form>}
   </div>;

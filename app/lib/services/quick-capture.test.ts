@@ -236,3 +236,13 @@ it('rolls back the whole capture if the idempotency receipt cannot be inserted',
   expect(db.select().from(captureReceipts).all()).toHaveLength(0);
   expect(db.select().from(compositions).all()).toHaveLength(0);
 });
+
+it('preserves malformed legacy sections and rolls back attempted placement', () => {
+  const { db, sqlite } = seed();
+  const capture = createQuickCapture(db, validInput);
+  insertComposition(db);
+  sqlite.prepare('UPDATE compositions SET sections = ? WHERE id = ?').run('{broken','comp-test');
+  expect(() => placeMotif(db,capture.motif.id,{kind:'existing',compositionId:'comp-test',sectionName:'Verse'})).toThrow(/preserved/);
+  expect(db.select().from(compositionMotifs).all()).toHaveLength(0);
+  expect(db.select().from(compositions).all()[0].sections).toBe('{broken');
+});

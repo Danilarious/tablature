@@ -11,6 +11,7 @@ import {
   compositionSetups,
 } from '../../db/schema';
 import { HttpError } from '../api/http';
+import { parseCompositionSections, compositionSectionOptions } from '../music/composition-sections';
 import { capoFretsSchema } from '../validation/schemas';
 import { generateNextHumanId } from './human-ids';
 import { findOrCreateCapo, findOrCreateSetup, type SyncDb } from './setups';
@@ -120,8 +121,9 @@ export function linkCapture(
     }).run();
   }
   const stored = db.select().from(compositions).where(eq(compositions.id, composition.id)).get()!;
-  const sections: { id: string; name: string }[] = stored.sections ? JSON.parse(stored.sections) : [];
-  if (sectionName && !sections.some((section) => section.name === sectionName)) {
+  const sections = parseCompositionSections(stored.sections);
+  if (!sections) throw new HttpError(422, 'This composition has malformed section data. It has been preserved; repair its sections before placing a motif here.');
+  if (sectionName && !compositionSectionOptions(sections).some((section) => section.name === sectionName)) {
     sections.push({ id: uuidv4(), name: sectionName });
   }
   db.update(compositions).set({ sections: JSON.stringify(sections), updatedAt: Date.now() }).where(eq(compositions.id, composition.id)).run();

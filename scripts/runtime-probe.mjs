@@ -1,4 +1,5 @@
 // Runs a built Next production server against a disposable notebook; never accepts a live data path.
+import Database from 'better-sqlite3';
 import { chromium } from 'playwright';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readdirSync } from 'node:fs';
@@ -129,6 +130,17 @@ try {
   await page.goto(base+'/quick-capture');await page.getByRole('button',{name:'Add to Existing Composition',exact:true}).click();await page.getByLabel(/^COMPOSITION/).selectOption(compId);await page.getByLabel('PART / SECTION (OPTIONAL)').fill('Verse');
   await page.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').fill('Existing destination acceptance');next=page.waitForResponse(r=>r.url()===base+'/api/quick-capture'&&r.status()===201);await page.getByRole('button',{name:'SAVE & CONNECT',exact:true}).click();const existing=await (await next).json();assert.equal(existing.composition.id,compId);
   await page.goto(base+'/print/composition/'+compId);assert.match(await page.locator('body').innerText(),/Existing destination acceptance/);
+  // Bad legacy section documents cannot crash capture, including the Inbox destination.
+  const probeDb = new Database(path.join(data,'database','notebook.db'));
+  const storedSections = probeDb.prepare('SELECT sections FROM compositions WHERE id = ?').get(compId).sections;
+  try {
+    for (const bad of ['{broken','{"not":"an array"}']) {
+      probeDb.prepare('UPDATE compositions SET sections = ? WHERE id = ?').run(bad,compId);
+      await page.goto(base+'/quick-capture');await page.getByRole('button',{name:'Save to Motif Inbox',exact:true}).waitFor();
+      await page.getByRole('button',{name:'Add to Existing Composition',exact:true}).click();await page.getByLabel(/^COMPOSITION/).selectOption(compId);
+      await page.getByRole('button',{name:'Save to Motif Inbox',exact:true}).click();
+    }
+  } finally { probeDb.prepare('UPDATE compositions SET sections = ? WHERE id = ?').run(storedSections,compId);probeDb.close(); }
   assert.deepEqual(errors,[]);assert.ok(!/Error:|Functions cannot be passed|Attempted to call/.test(log),log);
   writeFileSync(path.join(data,'result.json'),JSON.stringify({data,id,compId,inboxId:inbox.motif.id,errors,checks:'shared-tab conflict and explicit separate save; dropped-response and proxy-504 recovery without duplicates; extent persistence; new/existing/inbox capture; failed save recovery; inline tuning; map toggle/reload; notation persistence; placement; composition visibility; print/PDF; audio playback/range'},null,2));
   console.log('Production runtime and browser acceptance PASS. Evidence:',data);

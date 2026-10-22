@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import { compositionSectionOptions } from '@/app/lib/music/composition-sections';
 import NewTuning from '@/app/components/NewTuning';
 import MotifPlacement from '@/app/components/MotifPlacement';
 import { tempoTap } from '@/app/lib/music/tap-tempo';
@@ -875,7 +876,7 @@ export default function QuickCapturePage() {
               />
             </label>
           )}
-          <datalist id="capture-sections">{(() => { const comp = compositions.find(c => c.id === selectedCompositionId); return (comp?.sections ? JSON.parse(comp.sections) : []).map((section: any) => <option key={section.id} value={section.name} />); })()}</datalist>
+          <datalist id="capture-sections">{(() => { const comp = compositions.find(c => c.id === selectedCompositionId); return compositionSectionOptions(comp?.sections).map((section) => <option key={section.id} value={section.name} />); })()}</datalist>
           {compositionMode !== 'inbox' && (
             <label className="space-y-1 block">
               <span className="block text-[11px] text-stone-600">PART / SECTION (OPTIONAL)</span>
