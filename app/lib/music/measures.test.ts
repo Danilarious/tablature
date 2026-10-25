@@ -109,3 +109,58 @@ it('formats status amounts as exact musical fractions', async () => {
   const events=emptyMeasure('4/4'); events.push({...events[0],id:'triplet',duration:'triplet 1/8'});
   expect(measureStatus({id:events[0].measureId!,meter:'4/4',events})).toBe('Overflow 1/3 quarter-note beat');
 });
+
+describe('review regressions: boundary intent and placement', () => {
+  function expectBoundary(events: TabColumn[], boundary: TabColumn['barlineAfter']) {
+    expect(events.at(-1)?.barlineAfter).toBe(boundary);
+    expect(events.filter(e=>e.barlineAfter==='double'||e.barlineAfter==='final')).toHaveLength(boundary==='double'||boundary==='final'?1:0);
+    expect(events.slice(0,-1).every(e=>!e.barlineAfter)).toBe(true);
+    expect(tabDataSchema.parse(JSON.parse(JSON.stringify(events)))).toEqual(events);
+  }
+  it('honors double → final with unchanged duration', () => {
+    const events=emptyMeasure('2/4'); events[1].barlineAfter='double';
+    expectBoundary(editMeasured(events,1,{...displayColumns(events)[1],barlineAfter:'final'}),'final');
+  });
+  it.each(['single',null] as const)('honors final → %s with unchanged duration', boundary => {
+    const events=emptyMeasure('2/4'); events[1].barlineAfter='final';
+    expectBoundary(editMeasured(events,1,{...displayColumns(events)[1],barlineAfter:boundary}),boundary);
+  });
+  it('moves the chosen boundary once through shortening and lengthening', () => {
+    const events=emptyMeasure('2/4');
+    events[1]={...events[1],notes:[{stringIndex:0,fret:3}],rest:false,autoRest:false,barlineAfter:'double'};
+    const short=editMeasured(events,1,{...events[1],duration:'1/8',barlineAfter:'final'});
+    expect(short).toHaveLength(3); expect(short[2]).toMatchObject({autoRest:true,rest:true,duration:'1/8'});
+    expectBoundary(short,'final');
+    const long=editMeasured(short,1,{...displayColumns(short)[1],duration:'1/4'});
+    expect(long).toHaveLength(2); expectBoundary(long,'final');
+    const shortAgain=editMeasured(long,1,{...long[1],duration:'1/8'});
+    expectBoundary(shortAgain,'final');
+    expectBoundary(editMeasured(shortAgain,1,{...shortAgain[1],duration:'1/4',barlineAfter:'double'}),'double');
+  });
+  it('preserves the boundary when a duration-only update omits the optional boundary field', () => {
+    const events=emptyMeasure('2/4'); events[1].barlineAfter='final';
+    const updated={...events[1],duration:'1/8' as const}; delete updated.barlineAfter;
+    expectBoundary(editMeasured(events,1,updated),'final');
+  });
+  it('preserves a later measure boundary and clears old duplicate interior metadata', () => {
+    const events=emptyMeasure('4/4'); events[0].barlineAfter='final'; events[3].barlineAfter='final';
+    const nextMeasure=emptyMeasure('3/4'); nextMeasure[2].barlineAfter='double';
+    const result=editMeasured([...events,...nextMeasure],0,{...displayColumns(events)[0],duration:'1/8'});
+    expectBoundary(result.filter(e=>e.measureId===events[0].measureId),'final');
+    expect(result.filter(e=>e.measureId===nextMeasure[0].measureId)).toEqual(nextMeasure);
+  });
+});
+
+it('keeps grace transitions free of measured metadata in free rhythm', async () => {
+  const {toggleTabGrace}=await import('./measures');
+  const free: TabColumn={id:'free-empty',notes:[]};
+  const grace=toggleTabGrace(free); const regular=toggleTabGrace(grace);
+  expect(grace).toEqual({...free,kind:'grace'});
+  expect(regular).toEqual({...free,kind:'regular'});
+  expect(regular.autoRest).not.toBe(true);
+  for(const key of ['rhythmVersion','measureId','meter','autoRest']) expect(regular).not.toHaveProperty(key);
+  expect(tabDataSchema.parse([regular])).toEqual([regular]);
+  const measured=emptyMeasure('4/4')[0];
+  expect(toggleTabGrace(measured)).toMatchObject({kind:'grace',rest:false,autoRest:false});
+  expect(toggleTabGrace(toggleTabGrace(measured))).toMatchObject({kind:'regular',rest:true,autoRest:true});
+});

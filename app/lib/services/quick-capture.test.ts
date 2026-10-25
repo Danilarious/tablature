@@ -1,4 +1,4 @@
-import { emptyMeasure } from '../music/measures';
+import { emptyMeasure, toggleTabGrace } from '../music/measures';
 import { describe, expect, it } from 'vitest';
 import { captureReceipts, attachments, capoConfigurations, compositions, compositionMotifs, compositionSetups, motifs, setups } from '../../db/schema';
 import { createTestDb, insertInstrument, insertTuning } from '../../test/test-db';
@@ -280,4 +280,12 @@ it('refuses a blank measured event before writing and persists both valid rest s
   const saved=createQuickCapture(db,{...validInput,motif:{...validInput.motif,tabData:events}});
   const stored=db.select().from(motifs).all().find(m=>m.id===saved.motif.id)!;
   expect(JSON.parse(stored.tabData!)).toEqual(events);
+});
+
+it('saves free empty events after a regular → grace → regular transition', () => {
+  const {db}=seed();
+  const event=toggleTabGrace(toggleTabGrace({id:'free-empty',notes:[]}));
+  const saved=createQuickCapture(db,{...validInput,motif:{...validInput.motif,timeSignature:'free',tabData:[event]}});
+  const stored=db.select().from(motifs).all().find(m=>m.id===saved.motif.id)!;
+  expect(JSON.parse(stored.tabData!)).toEqual([event]);
 });

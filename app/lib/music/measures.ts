@@ -56,6 +56,14 @@ export function toggleTabRest(event: TabColumn): TabColumn {
   return { ...event, notes: [], rest: true, autoRest: event.rest === true && !event.autoRest && !event.technique };
 }
 
+export function toggleTabGrace(event: TabColumn): TabColumn {
+  const kind = event.kind === 'grace' ? 'regular' : 'grace';
+  // Free events keep their permissive rest/empty state and never acquire measure metadata.
+  if (event.rhythmVersion !== 2 || !event.measureId || !event.meter) return { ...event, kind };
+  const emptyRegular = kind === 'regular' && !event.notes.length;
+  return { ...event, kind, rest: emptyRegular, autoRest: emptyRegular && !event.technique };
+}
+
 export function quarterBeatLabel(amount: number): string {
   const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
   const whole = Math.floor(amount / 48); const remainder = amount % 48;
@@ -83,10 +91,29 @@ export function editMeasured(events: TabColumn[], index: number, updated: TabCol
   let end = index+1; let available = 0;
   while (end < events.length && events[end].measureId === old.measureId && events[end].autoRest && !events[end].notes.length && events[end].kind !== 'grace') { available += ticks(events[end]); end++; }
   if (delta > available) throw new Error('Duration conflicts with an explicit event or measure boundary. Keep the current duration, shorten it, or add a new measure for the phrase.');
-  const boundary = events[end-1]?.barlineAfter;
+  let measureStart = index;
+  while (measureStart > 0 && events[measureStart-1].measureId === old.measureId) measureStart--;
+  let measureEnd = index+1;
+  while (measureEnd < events.length && events[measureEnd].measureId === old.measureId) measureEnd++;
+  // The editor passes rendered columns: an ordinary boundary may be projected as
+  // single, or stale interior metadata hidden as null. Neither is an explicit edit.
+  const displayedBoundary = index === measureEnd-1
+    ? (old.barlineAfter === 'double' || old.barlineAfter === 'final' ? old.barlineAfter : 'single')
+    : null;
+  const requestedBoundary = updated.barlineAfter ?? null;
+  const boundaryChanged = Object.prototype.hasOwnProperty.call(updated, 'barlineAfter')
+    && requestedBoundary !== (old.barlineAfter ?? null) && requestedBoundary !== displayedBoundary;
+  const boundary = boundaryChanged ? requestedBoundary : events[measureEnd-1].barlineAfter;
   const fill = delta <= 0 ? [...rests(-delta,old), ...events.slice(index+1,end)] : rests(available-delta,old);
   result.splice(index,end-index,next,...fill);
-  if (boundary && (boundary === 'double' || boundary === 'final')) result[index+fill.length] = { ...result[index+fill.length], barlineAfter: boundary };
+  const finalIndex = measureEnd + (1+fill.length) - (end-index) - 1;
+  // Persist a measure boundary exactly once, at the resulting final event. Also
+  // clean up duplicate interior metadata left by earlier duration edits.
+  for (let i = measureStart; i <= finalIndex; i++) {
+    if (i === finalIndex) {
+      if (boundary !== undefined || result[i].barlineAfter != null) result[i] = { ...result[i], barlineAfter: boundary ?? null };
+    } else if (result[i].barlineAfter != null) result[i] = { ...result[i], barlineAfter: null };
+  }
   return result;
 }
 export function durationLabel(duration: TabColumn['duration']): string {

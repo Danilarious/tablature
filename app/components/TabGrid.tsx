@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { displayColumns, durationLabel, ticks, withTabNotes, toggleTabRest } from '@/app/lib/music/measures';
+import { displayColumns, durationLabel, ticks, withTabNotes, toggleTabRest, toggleTabGrace } from '@/app/lib/music/measures';
 import { Plus, Trash2 } from 'lucide-react';
 import { getStandardTabRows } from '@/app/lib/music/string-order';
 
@@ -156,10 +156,7 @@ export default function TabGrid({
           </label>
           <button
             type="button"
-            onClick={() => updateColumn(activeColumnIndex, {
-              kind: activeColumn.kind === 'grace' ? 'regular' : 'grace',
-              rest: activeColumn.kind === 'grace' && !activeColumn.notes.length, autoRest: activeColumn.kind === 'grace' && !activeColumn.notes.length && !activeColumn.technique,
-            })}
+            onClick={() => updateColumn(activeColumnIndex, toggleTabGrace(activeColumn))}
             className={`px-2 py-1 border rounded ${activeColumn.kind === 'grace' ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
           >
             Grace / passing note
