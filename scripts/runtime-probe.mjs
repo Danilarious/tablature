@@ -1,3 +1,4 @@
+import { measuredAcceptance } from './measured-browser.mjs';
 // Runs a built Next production server against a disposable notebook; never accepts a live data path.
 import Database from 'better-sqlite3';
 import { chromium } from 'playwright';
@@ -14,7 +15,11 @@ if (!process.argv.includes('--skip-build')) run(['run', 'build']);
 const port = 3107;
 const base = `http://127.0.0.1:${port}`;
 let log = '';
-const server = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '-H', '127.0.0.1', '-p', String(port)], { env, stdio: ['ignore','pipe','pipe'] });
+const acceptanceImage = process.env.BXB_ACCEPTANCE_IMAGE;
+const containerName = `bxb-acceptance-${process.pid}`;
+const server = acceptanceImage
+  ? spawn('docker', ['run','--rm','--name',containerName,'-p',`127.0.0.1:${port}:3000`,'-v',`${data}:/data`,acceptanceImage], { stdio:['ignore','pipe','pipe'] })
+  : spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '-H', '127.0.0.1', '-p', String(port)], { env, stdio: ['ignore','pipe','pipe'] });
 server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
 let browser;
 try {
@@ -141,9 +146,10 @@ try {
       await page.getByRole('button',{name:'Save to Motif Inbox',exact:true}).click();
     }
   } finally { probeDb.prepare('UPDATE compositions SET sections = ? WHERE id = ?').run(storedSections,compId);probeDb.close(); }
+  await measuredAcceptance(browser,base,data);
   assert.deepEqual(errors,[]);assert.ok(!/Error:|Functions cannot be passed|Attempted to call/.test(log),log);
   writeFileSync(path.join(data,'result.json'),JSON.stringify({data,id,compId,inboxId:inbox.motif.id,errors,checks:'shared-tab conflict and explicit separate save; dropped-response and proxy-504 recovery without duplicates; extent persistence; new/existing/inbox capture; failed save recovery; inline tuning; map toggle/reload; notation persistence; placement; composition visibility; print/PDF; audio playback/range'},null,2));
   console.log('Production runtime and browser acceptance PASS. Evidence:',data);
 } finally {
-  await browser?.close();server.kill('SIGTERM');await new Promise(resolve=>server.once('exit',resolve));writeFileSync(path.join(data,'server.log'),log);
+  await browser?.close();if (acceptanceImage) spawnSync('docker',['stop',containerName]); else server.kill('SIGTERM');if (server.exitCode === null) await new Promise(resolve=>server.once('exit',resolve));writeFileSync(path.join(data,'server.log'),log);
 }

@@ -6,6 +6,7 @@ import NewTuning from '@/app/components/NewTuning';
 import MotifPlacement from '@/app/components/MotifPlacement';
 import { tempoTap } from '@/app/lib/music/tap-tempo';
 import FretboardEditor, { FretboardMode, FretboardNote } from '@/app/components/FretboardEditor';
+import { adaptTabData, emptyMeasure, editMeasured, measureStatus } from '@/app/lib/music/measures';
 import TabGrid, { TabColumn } from '@/app/components/TabGrid';
 import AudioRecorder, { CapturedMedia } from '@/app/components/AudioRecorder';
 import { Check, AlertCircle, Save, Guitar, Radio, RotateCcw, Trash2 } from 'lucide-react';
@@ -86,6 +87,8 @@ export default function QuickCapturePage() {
 
   // TAB event entry and an independent, multi-position fretboard map.
   const [tabColumns, setTabColumns] = useState<TabColumn[]>(EMPTY_COLUMNS);
+  const [rhythmConflict, setRhythmConflict] = useState('');
+  const measuredModel = adaptTabData(tabColumns);
   const [activeColumnIndex, setActiveColumnIndex] = useState<number>(0);
   const [fretboardMode, setFretboardMode] = useState<FretboardMode>('map');
   const [fretboardMap, setFretboardMap] = useState<FretboardNote[]>([]);
@@ -336,7 +339,7 @@ export default function QuickCapturePage() {
     }
 
     const updatedCols = [...tabColumns];
-    updatedCols[activeColumnIndex] = { ...activeCol, notes: newNotes, rest: newNotes.length > 0 ? false : activeCol.rest };
+    updatedCols[activeColumnIndex] = { ...activeCol, notes: newNotes, autoRest: newNotes.length > 0 ? false : activeCol.autoRest, rest: newNotes.length > 0 ? false : activeCol.rest };
     setTabColumns(updatedCols);
   };
 
@@ -894,6 +897,23 @@ export default function QuickCapturePage() {
 
       {/* TAB event editor and independent fretboard map */}
       <div className="space-y-4">
+        <div className="p-3 border border-stone-300 space-y-2">
+          <p>Rhythm: {measuredModel.mode === 'free' ? 'Free rhythm (legacy events preserved)' : 'Measured'}</p>
+          {rhythmConflict && <p role="alert" className="text-red-800">{rhythmConflict} <button type="button" onClick={() => setRhythmConflict('')}>Keep current events</button></p>}
+          {measuredModel.mode === 'free' ? <button type="button" onClick={() => {
+            if (tabColumns.some(c => c.notes.length || c.duration || c.rest || c.technique || c.barlineAfter || c.kind === 'grace')) { setRhythmConflict('Existing free-rhythm events are preserved. Start a separate capture to use measured rhythm.'); return; }
+            try { setTabColumns(emptyMeasure(timeSignature)); setActiveColumnIndex(0); setRhythmConflict(''); } catch (error) { setRhythmConflict((error as Error).message); }
+          }}>Start measured rhythm</button> : <>
+            <button type="button" onClick={() => { try { setTabColumns([...tabColumns, ...emptyMeasure(timeSignature)]); setRhythmConflict(''); } catch(error) { setRhythmConflict((error as Error).message); } }}>Add measure</button>
+            {measuredModel.measures.map((m,i) => <div key={m.id} data-measure-id={m.id}>
+              Measure {i+1} · {m.meter}{m.meter === '6/8' ? ' · grouped 3+3' : ''} · {measureStatus(m)}
+              <button type="button" onClick={() => {
+                if (m.events.some(e => !e.autoRest) && !window.confirm('Delete this measure and its explicitly entered events?')) return;
+                const next = tabColumns.filter(e => e.measureId !== m.id); setTabColumns(next.length ? next : emptyMeasure(m.meter)); setActiveColumnIndex(0);
+              }}>Delete measure {i+1}</button>
+            </div>)}
+          </>}
+        </div>
         {/* Tab Grid */}
         <TabGrid
           stringCount={stringCount}
@@ -902,16 +922,21 @@ export default function QuickCapturePage() {
           activeColumnIndex={activeColumnIndex}
           onSelectColumn={setActiveColumnIndex}
           onUpdateColumn={(idx, col) => {
-            const next = [...tabColumns];
-            next[idx] = col;
-            setTabColumns(next);
+            try { setTabColumns(editMeasured(tabColumns, idx, col)); setRhythmConflict(''); } catch(error) { setRhythmConflict((error as Error).message); }
           }}
-          onAddColumn={() => {
+          onAddColumn={measuredModel.mode === 'measured' ? undefined : () => {
             const next = [...tabColumns, { id: `c-${Date.now()}`, notes: [] }];
             setTabColumns(next);
             setActiveColumnIndex(next.length - 1);
           }}
           onDeleteColumn={(idx) => {
+            if (measuredModel.mode === 'measured') {
+              const old = tabColumns[idx];
+              if (!old.autoRest && !window.confirm('Replace this explicitly entered event with a generated rest?')) return;
+              if (old.kind === 'grace') setTabColumns(tabColumns.filter((_,i) => i !== idx));
+              else setTabColumns(tabColumns.map((e,i) => i === idx ? { ...e, notes: [], technique: null, rest: true, autoRest: true } : e));
+              return;
+            }
             if (tabColumns.length <= 1) return;
             const next = tabColumns.filter((_, i) => i !== idx);
             setTabColumns(next);
