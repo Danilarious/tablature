@@ -64,3 +64,9 @@ export function durationLabel(duration: TabColumn['duration']): string {
   const labels: Record<string,string> = { '1':'𝅝 whole', '1/2':'𝅗𝅥 half', '1/4':'♩ quarter', '1/8':'♪ eighth', '1/16':'♬ sixteenth', 'dotted 1/4':'♩· dotted quarter', 'triplet 1/8':'♪₃ triplet eighth' };
   return duration ? labels[duration] ?? duration : 'Free';
 }
+export function meterLabel(events: TabColumn[], fallback?: string | null): string {
+  const model=adaptTabData(events);
+  if (model.mode==='free') return fallback && fallback !== 'free' ? fallback : 'Free';
+  const meters=Array.from(new Set(model.measures.map(m=>m.meter)));
+  return meters.length===1 ? meters[0] : `Mixed: ${meters.join(', ')}`;
+}

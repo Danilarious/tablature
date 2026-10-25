@@ -226,7 +226,7 @@ export default function TabGrid({
                   key={col.id || colIdx}
                   data-measure-start={start || undefined}
                   data-compound-group={compoundGroup || undefined}
-                  style={compoundGroup ? { borderLeft: '3px dashed #a8a29e', marginLeft: 8 } : undefined}
+                  style={{ ...(compoundGroup ? { borderLeft: '3px dashed #a8a29e', marginLeft: 8 } : {}), ...(col.barlineAfter ? { borderRight: col.barlineAfter === 'single' ? '2px solid #292524' : col.barlineAfter === 'double' ? '5px double #292524' : '7px double #0c0a09' } : {}) }}
                   onClick={() => onSelectColumn?.(colIdx)}
                   className={`${col.kind === 'grace' ? 'w-24' : 'w-28'} relative group/column flex-shrink-0 flex flex-col items-center ${barlineClass(col.barlineAfter)} ${readOnly ? '' : 'cursor-pointer'} transition-colors ${
                     isActive ? 'bg-amber-100/50 ring-1 ring-amber-500' : readOnly ? '' : 'hover:bg-stone-100/60'

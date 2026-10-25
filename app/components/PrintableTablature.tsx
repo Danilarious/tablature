@@ -103,7 +103,7 @@ export default function PrintableTablature({
                 return (
                   <div
                     key={column.id || absoluteIndex}
-                    className={column.kind === 'grace' ? 'flex-[0.55] min-w-0' : 'flex-1 min-w-0'}
+                    className="flex-1 min-w-0"
                     style={{...boundaryStyle(column.barlineAfter), ...(compoundGroup ? {borderLeft:'2px dashed #a8a29e'} : {})}}
                   >
                     <div className="h-10 px-0.5 flex items-center justify-center font-mono text-[8px] text-stone-600 border-b border-stone-300 text-center leading-tight whitespace-normal">

@@ -897,20 +897,20 @@ export default function QuickCapturePage() {
 
       {/* TAB event editor and independent fretboard map */}
       <div className="space-y-4">
-        <div className="p-3 border border-stone-300 space-y-2">
+        <div className="p-3 border border-stone-300 space-y-2 font-mono text-xs">
           <p>Rhythm: {measuredModel.mode === 'free' ? 'Free rhythm (legacy events preserved)' : 'Measured'}</p>
           {rhythmConflict && <p role="alert" className="text-red-800">{rhythmConflict} <button type="button" onClick={() => setRhythmConflict('')}>Keep current events</button></p>}
           {measuredModel.mode === 'free' ? <button type="button" onClick={() => {
             if (tabColumns.some(c => c.notes.length || c.duration || c.rest || c.technique || c.barlineAfter || c.kind === 'grace')) { setRhythmConflict('Existing free-rhythm events are preserved. Start a separate capture to use measured rhythm.'); return; }
             try { setTabColumns(emptyMeasure(timeSignature)); setActiveColumnIndex(0); setRhythmConflict(''); } catch (error) { setRhythmConflict((error as Error).message); }
-          }}>Start measured rhythm</button> : <>
-            <button type="button" onClick={() => { try { setTabColumns([...tabColumns, ...emptyMeasure(timeSignature)]); setRhythmConflict(''); } catch(error) { setRhythmConflict((error as Error).message); } }}>Add measure</button>
-            {measuredModel.measures.map((m,i) => <div key={m.id} data-measure-id={m.id}>
+          }} className="px-3 py-2 border border-stone-400 rounded bg-white">Start measured rhythm</button> : <>
+            <button type="button" onClick={() => { try { setTabColumns([...tabColumns, ...emptyMeasure(timeSignature)]); setRhythmConflict(''); } catch(error) { setRhythmConflict((error as Error).message); } }} className="px-3 py-2 border border-stone-400 rounded bg-white">Add measure</button>
+            {measuredModel.measures.map((m,i) => <div key={m.id} data-measure-id={m.id} className="flex flex-wrap items-center justify-between gap-3 border-t border-stone-200 pt-2">
               Measure {i+1} · {m.meter}{m.meter === '6/8' ? ' · grouped 3+3' : ''} · {measureStatus(m)}
               <button type="button" onClick={() => {
                 if (m.events.some(e => !e.autoRest) && !window.confirm('Delete this measure and its explicitly entered events?')) return;
                 const next = tabColumns.filter(e => e.measureId !== m.id); setTabColumns(next.length ? next : emptyMeasure(m.meter)); setActiveColumnIndex(0);
-              }}>Delete measure {i+1}</button>
+              }} className="px-2 py-1 border border-stone-300 rounded text-red-800 bg-white">Delete measure {i+1}</button>
             </div>)}
           </>}
         </div>
