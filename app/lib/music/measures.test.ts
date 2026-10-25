@@ -69,3 +69,43 @@ it('rejects invalid measured envelopes at the persistence boundary', () => {
   expect(() => tabDataSchema.parse([{...events[0],notes:[{stringIndex:0,fret:1}]}])).toThrow();
   expect(() => tabDataSchema.parse([...events,{id:'legacy',notes:[]}])).toThrow();
 });
+
+it('rebuilds only one pristine measure and protects all explicit/touched material', async () => {
+  const {canRebuildEmptyMeasure}=await import('./measures');
+  expect(canRebuildEmptyMeasure(emptyMeasure('4/4'))).toBe(true);
+  const events=emptyMeasure('4/4');
+  for (const patch of [
+    {notes:[{stringIndex:0,fret:3}],rest:false,autoRest:false},
+    {technique:'h',autoRest:false}, {kind:'grace' as const,autoRest:false},
+    {autoRest:false}, {duration:'1/8' as const}, {barlineAfter:'final' as const},
+  ]) expect(canRebuildEmptyMeasure([{...events[0],...patch},...events.slice(1)])).toBe(false);
+  expect(canRebuildEmptyMeasure([...events,...emptyMeasure('3/4')])).toBe(false);
+  expect(canRebuildEmptyMeasure([{id:'legacy',notes:[]}])).toBe(false);
+});
+it('cycles generated and explicit rests without producing blank measured events', async () => {
+  const {toggleTabRest,withTabNotes}=await import('./measures');
+  const generated=emptyMeasure('4/4')[0];
+  const explicit=toggleTabRest(generated);
+  expect(explicit).toMatchObject({notes:[],rest:true,autoRest:false});
+  const editable=toggleTabRest(explicit);
+  expect(editable).toMatchObject({notes:[],rest:true,autoRest:true});
+  const note=withTabNotes(editable,[{stringIndex:0,fret:3}]);
+  expect(note).toMatchObject({rest:false,autoRest:false});
+  expect(withTabNotes(note,[])).toMatchObject({notes:[],rest:true,autoRest:true});
+  const emptyWithTechnique=withTabNotes({...note,technique:'h'},[]);
+  expect(emptyWithTechnique).toMatchObject({rest:true,autoRest:false,technique:'h'});
+  for(const event of [generated,explicit,editable,note,withTabNotes(note,[]),emptyWithTechnique]) expect(tabDataSchema.parse([event])).toEqual([event]);
+  const blank={...generated,rest:false,autoRest:false};
+  expect(()=>tabDataSchema.parse([blank])).toThrow(/notes or be rests/);
+  expect(()=>editMeasured([generated],0,blank)).toThrow(/notes or be a rest/);
+  // Free rhythm retains the existing empty-event semantics.
+  expect(tabDataSchema.parse([{id:'free',notes:[],rest:false}])).toHaveLength(1);
+});
+it('formats status amounts as exact musical fractions', async () => {
+  const {quarterBeatLabel}=await import('./measures');
+  expect(quarterBeatLabel(16)).toBe('1/3 quarter-note beat');
+  expect(quarterBeatLabel(80)).toBe('1 2/3 quarter-note beats');
+  expect(quarterBeatLabel(12)).toBe('1/4 quarter-note beat');
+  const events=emptyMeasure('4/4'); events.push({...events[0],id:'triplet',duration:'triplet 1/8'});
+  expect(measureStatus({id:events[0].measureId!,meter:'4/4',events})).toBe('Overflow 1/3 quarter-note beat');
+});

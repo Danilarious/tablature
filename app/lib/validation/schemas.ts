@@ -220,6 +220,8 @@ export const tabDataSchema = z.array(tabColumnSchema).max(2000).superRefine((eve
     }
     if (event.meter !== meter) invalid('Events in a measure must share its meter.');
     if (event.autoRest && (!event.rest || event.notes.length || event.kind === 'grace' || event.technique)) invalid('Generated rests cannot contain explicit musical content.');
+    if (event.kind !== 'grace' && !event.notes.length && !event.rest) invalid('Measured events must contain notes or be rests.');
+    if (event.rest && event.notes.length) invalid('A rest cannot also contain notes.');
     if (event.kind !== 'grace' && !event.duration) invalid('Measured events need a duration.');
   }
 });

@@ -269,3 +269,15 @@ it('persists versioned measures without changing a legacy capture', () => {
   expect(JSON.parse(stored.tabData!)).toEqual(events);
   expect(db.select().from(motifs).all().find(m => m.id===legacy.motif.id)).toEqual(before);
 });
+
+it('refuses a blank measured event before writing and persists both valid rest states', () => {
+  const {db}=seed();
+  const events=emptyMeasure('4/4');
+  expect(()=>createQuickCapture(db,{...validInput,motif:{...validInput.motif,tabData:[{...events[0],rest:false,autoRest:false}]}})).toThrow();
+  expect(counts(db)).toEqual({capos:0,setups:0,motifs:0});
+  events[0]={...events[0],autoRest:false};
+  events[1]={...events[1],rest:false,autoRest:false,notes:[{stringIndex:0,fret:3}]};
+  const saved=createQuickCapture(db,{...validInput,motif:{...validInput.motif,tabData:events}});
+  const stored=db.select().from(motifs).all().find(m=>m.id===saved.motif.id)!;
+  expect(JSON.parse(stored.tabData!)).toEqual(events);
+});

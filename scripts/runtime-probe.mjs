@@ -31,6 +31,7 @@ try {
   const errors=[];page.on('pageerror', e => errors.push(e.message));
   console.log('browser started',data);
   await page.goto(base+'/quick-capture'); await page.getByRole('button',{name:'Create a New Composition',exact:true}).waitFor();
+  await page.getByLabel('Rhythm mode',{exact:true}).selectOption('free');
   await page.getByPlaceholder('e.g. 6/8 Riff in Open D or Morning Noodle').fill('Browser acceptance motif');
   await page.getByRole('button',{name:'New tuning / Edit pitches'}).click();
   await page.getByLabel('Tuning name', {exact:true}).fill('Browser alternate tuning');

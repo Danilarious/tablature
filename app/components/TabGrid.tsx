@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { displayColumns, durationLabel, ticks } from '@/app/lib/music/measures';
+import { displayColumns, durationLabel, ticks, withTabNotes, toggleTabRest } from '@/app/lib/music/measures';
 import { Plus, Trash2 } from 'lucide-react';
 import { getStandardTabRows } from '@/app/lib/music/string-order';
 
@@ -91,7 +91,7 @@ export default function TabGrid({
     const col = columns[colIdx];
     const newNotes = col.notes.filter((n) => n.stringIndex !== strIdx);
     if (parsed !== null) newNotes.push({ stringIndex: strIdx, fret: parsed });
-    onUpdateColumn(colIdx, { ...col, notes: newNotes, autoRest: newNotes.length > 0 ? false : col.autoRest, rest: newNotes.length > 0 ? false : col.rest });
+    onUpdateColumn(colIdx, withTabNotes(col, newNotes));
   };
 
   const cycleBarline = (index: number) => {
@@ -158,7 +158,7 @@ export default function TabGrid({
             type="button"
             onClick={() => updateColumn(activeColumnIndex, {
               kind: activeColumn.kind === 'grace' ? 'regular' : 'grace',
-              rest: activeColumn.kind === 'grace' ? activeColumn.rest : false, autoRest: false,
+              rest: activeColumn.kind === 'grace' && !activeColumn.notes.length, autoRest: activeColumn.kind === 'grace' && !activeColumn.notes.length && !activeColumn.technique,
             })}
             className={`px-2 py-1 border rounded ${activeColumn.kind === 'grace' ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
           >
@@ -168,11 +168,13 @@ export default function TabGrid({
             type="button"
             onClick={() => {
               if (activeColumn.notes.length && !window.confirm('Replace the notes in this event with an explicit rest?')) return;
-              updateColumn(activeColumnIndex, { rest: !activeColumn.rest, notes: activeColumn.rest ? activeColumn.notes : [], autoRest: false });
+              updateColumn(activeColumnIndex, toggleTabRest(activeColumn));
             }}
-            className={`px-2 py-1 border rounded ${activeColumn.rest ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
+            disabled={!!activeColumn.measureId && (activeColumn.kind === 'grace' || (!!activeColumn.rest && !!activeColumn.technique))}
+            title={activeColumn.measureId ? 'Generated rest → explicit rest; explicit rest → editable generated rest. Remove any technique first.' : 'Toggle rest'}
+            className={`px-2 py-1 border rounded disabled:opacity-50 ${activeColumn.rest ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
           >
-            Rest
+            {activeColumn.measureId ? activeColumn.autoRest ? 'Make explicit rest' : activeColumn.rest ? 'Make editable rest' : 'Rest' : 'Rest'}
           </button>
           <label className="space-y-1">
             <span className="block text-stone-500 uppercase">Bar after</span>
@@ -193,8 +195,8 @@ export default function TabGrid({
         </div>
       )}
 
-      <div className="overflow-x-auto p-4">
-        <div className="flex">
+      <div className="overflow-x-auto p-4" role="region" aria-label="Scrollable tablature" tabIndex={0}>
+        <div className="flex w-max min-w-full pr-2">
           <div className="w-24 flex-shrink-0 border-r-2 border-stone-800 pr-2">
             <div className="h-10" />
             <div className="space-y-4 py-2">
@@ -224,6 +226,8 @@ export default function TabGrid({
               return (
                 <div
                   key={col.id || colIdx}
+                  data-tab-event={colIdx + 1}
+                  data-barline={col.barlineAfter || undefined}
                   data-measure-start={start || undefined}
                   data-compound-group={compoundGroup || undefined}
                   style={{ ...(compoundGroup ? { borderLeft: '3px dashed #a8a29e', marginLeft: 8 } : {}), ...(col.barlineAfter ? { borderRight: col.barlineAfter === 'single' ? '2px solid #292524' : col.barlineAfter === 'double' ? '5px double #292524' : '7px double #0c0a09' } : {}) }}

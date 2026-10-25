@@ -36,10 +36,37 @@ export function emptyMeasure(meter: string): TabColumn[] {
   const [n,d] = meter.split('/').map(Number); const measureId = uid();
   return Array.from({length:n}, () => ({ id: uid(), notes: [], duration: (d === 2 ? '1/2' : `1/${d}`) as TabDuration, rest: true, autoRest: true, rhythmVersion: 2 as const, measureId, meter }));
 }
+/** A single pristine denominator-slot measure can follow a meter change safely. */
+export function canRebuildEmptyMeasure(events: TabColumn[]): boolean {
+  const model = adaptTabData(events);
+  if (model.mode !== 'measured' || model.measures.length !== 1) return false;
+  const measure = model.measures[0];
+  const [numerator, denominator] = measure.meter.split('/').map(Number);
+  return events.length === numerator && events.every(e => e.autoRest === true && e.rest === true && !e.notes.length && !e.technique && e.kind !== 'grace' && ticks(e) === 192 / denominator && (!e.barlineAfter || e.barlineAfter === 'single'));
+}
+
+export function withTabNotes(event: TabColumn, notes: TabColumn['notes']): TabColumn {
+  if (!event.measureId) return { ...event, notes, rest: notes.length ? false : event.rest };
+  return { ...event, notes, rest: !notes.length && event.kind !== 'grace', autoRest: !notes.length && event.kind !== 'grace' && !event.technique };
+}
+
+export function toggleTabRest(event: TabColumn): TabColumn {
+  if (!event.measureId) return { ...event, rest: !event.rest, notes: event.rest ? event.notes : [] };
+  // A measured rest stays a rest; the control changes whether it is explicit/editable.
+  return { ...event, notes: [], rest: true, autoRest: event.rest === true && !event.autoRest && !event.technique };
+}
+
+export function quarterBeatLabel(amount: number): string {
+  const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+  const whole = Math.floor(amount / 48); const remainder = amount % 48;
+  const divisor = gcd(remainder, 48);
+  const fraction = remainder ? `${remainder / divisor}/${48 / divisor}` : '';
+  return `${whole ? `${whole}${fraction ? ' ' : ''}` : ''}${fraction} quarter-note ${amount <= 48 ? 'beat' : 'beats'}`;
+}
 export function measureStatus(measure: Measure): string {
   if (measure.events.some(e => e.kind !== 'grace' && !e.duration)) return 'Unknown duration';
   const delta = measure.events.reduce((sum,e) => sum+ticks(e),0)-capacity(measure.meter);
-  return delta === 0 ? 'Complete' : `${delta < 0 ? 'Underfill' : 'Overflow'} ${Math.abs(delta)/48} quarter beats`;
+  return delta === 0 ? 'Complete' : `${delta < 0 ? 'Underfill' : 'Overflow'} ${quarterBeatLabel(Math.abs(delta))}`;
 }
 export function displayColumns(events: TabColumn[]): TabColumn[] {
   const model = adaptTabData(events); if (model.mode === 'free') return events;
@@ -47,6 +74,8 @@ export function displayColumns(events: TabColumn[]): TabColumn[] {
 }
 export function editMeasured(events: TabColumn[], index: number, updated: TabColumn): TabColumn[] {
   const old = events[index]; if (!old?.measureId) return events.map((e,i) => i === index ? updated : e);
+  if (updated.kind !== 'grace' && !updated.notes.length && !updated.rest) throw new Error('A measured event must contain notes or be a rest.');
+  if (updated.rest && updated.notes.length) throw new Error('A rest cannot also contain notes.');
   if (!updated.duration && updated.kind !== 'grace') throw new Error('Measured events need a duration. Choose a duration or keep the current event.');
   const next = { ...updated, autoRest: updated.autoRest && !updated.notes.length && updated.rest === true && !updated.technique && updated.kind !== 'grace' };
   const delta = ticks(next)-ticks(old); const result = [...events];
