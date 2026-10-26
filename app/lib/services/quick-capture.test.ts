@@ -1,3 +1,4 @@
+import { emptyMeasure, toggleTabGrace } from '../music/measures';
 import { describe, expect, it } from 'vitest';
 import { captureReceipts, attachments, capoConfigurations, compositions, compositionMotifs, compositionSetups, motifs, setups } from '../../db/schema';
 import { createTestDb, insertInstrument, insertTuning } from '../../test/test-db';
@@ -256,4 +257,35 @@ it('rejects malformed sections even when a duplicate legacy placement would be s
   expect(() => placeMotif(db,capture.motif.id,{kind:'existing',compositionId:'comp-test',sectionName:''})).toThrow(/preserved/);
   expect(db.select().from(compositionMotifs).all()).toHaveLength(1);
   expect(db.select().from(compositions).all()[0].sections).toBe('{broken');
+});
+
+it('persists versioned measures without changing a legacy capture', () => {
+  const {db}=seed();
+  const legacy=createQuickCapture(db,validInput);
+  const before=db.select().from(motifs).all().find(m => m.id===legacy.motif.id);
+  const events=emptyMeasure('6/8');
+  const measured=createQuickCapture(db,{...validInput,motif:{...validInput.motif,name:'Measured',timeSignature:'6/8',tabData:events}});
+  const stored=db.select().from(motifs).all().find(m => m.id===measured.motif.id)!;
+  expect(JSON.parse(stored.tabData!)).toEqual(events);
+  expect(db.select().from(motifs).all().find(m => m.id===legacy.motif.id)).toEqual(before);
+});
+
+it('refuses a blank measured event before writing and persists both valid rest states', () => {
+  const {db}=seed();
+  const events=emptyMeasure('4/4');
+  expect(()=>createQuickCapture(db,{...validInput,motif:{...validInput.motif,tabData:[{...events[0],rest:false,autoRest:false}]}})).toThrow();
+  expect(counts(db)).toEqual({capos:0,setups:0,motifs:0});
+  events[0]={...events[0],autoRest:false};
+  events[1]={...events[1],rest:false,autoRest:false,notes:[{stringIndex:0,fret:3}]};
+  const saved=createQuickCapture(db,{...validInput,motif:{...validInput.motif,tabData:events}});
+  const stored=db.select().from(motifs).all().find(m=>m.id===saved.motif.id)!;
+  expect(JSON.parse(stored.tabData!)).toEqual(events);
+});
+
+it('saves free empty events after a regular → grace → regular transition', () => {
+  const {db}=seed();
+  const event=toggleTabGrace(toggleTabGrace({id:'free-empty',notes:[]}));
+  const saved=createQuickCapture(db,{...validInput,motif:{...validInput.motif,timeSignature:'free',tabData:[event]}});
+  const stored=db.select().from(motifs).all().find(m=>m.id===saved.motif.id)!;
+  expect(JSON.parse(stored.tabData!)).toEqual([event]);
 });

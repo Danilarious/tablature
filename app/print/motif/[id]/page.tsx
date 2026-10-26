@@ -1,3 +1,4 @@
+import { meterLabel } from '@/app/lib/music/measures';
 import MotifPlacement from '@/app/components/MotifPlacement';
 import RecordingList from '@/app/components/RecordingList';
 import { attachments, compositionMotifs, compositions } from '@/app/db/schema';
@@ -96,7 +97,7 @@ export default async function PrintMotifPage({ params }: { params: { id: string 
           </div>
           <div>
             <span className="text-stone-500 block text-[9px] uppercase font-bold">METER</span>
-            <span className="font-bold">{motif.timeSignature && motif.timeSignature !== 'free' ? motif.timeSignature : 'Free'}</span>
+            <span className="font-bold">{meterLabel(tabCols, motif.timeSignature)}</span>
           </div>
           <div>
             <span className="text-stone-500 block text-[9px] uppercase font-bold">TEMPO</span>

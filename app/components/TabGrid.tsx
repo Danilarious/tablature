@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { displayColumns, durationLabel, ticks, withTabNotes, toggleTabRest, toggleTabGrace } from '@/app/lib/music/measures';
 import { Plus, Trash2 } from 'lucide-react';
 import { getStandardTabRows } from '@/app/lib/music/string-order';
 
@@ -16,6 +17,10 @@ export interface TabNote {
 }
 
 export interface TabColumn {
+  rhythmVersion?: 2;
+  measureId?: string;
+  meter?: string;
+  autoRest?: boolean;
   id: string;
   notes: TabNote[];
   duration?: TabDuration | null;
@@ -70,6 +75,7 @@ export default function TabGrid({
   onAddColumn,
   onDeleteColumn,
 }: TabGridProps) {
+  columns = displayColumns(columns);
   const rows = getStandardTabRows(stringCount, pitches);
   const activeColumn = columns[activeColumnIndex];
 
@@ -85,11 +91,12 @@ export default function TabGrid({
     const col = columns[colIdx];
     const newNotes = col.notes.filter((n) => n.stringIndex !== strIdx);
     if (parsed !== null) newNotes.push({ stringIndex: strIdx, fret: parsed });
-    onUpdateColumn(colIdx, { ...col, notes: newNotes, rest: newNotes.length > 0 ? false : col.rest });
+    onUpdateColumn(colIdx, withTabNotes(col, newNotes));
   };
 
   const cycleBarline = (index: number) => {
     const current = columns[index]?.barlineAfter;
+    if (columns[index]?.measureId && columns[index+1]?.measureId === columns[index].measureId) return;
     const next: TabBarline | null =
       !current ? 'single' : current === 'single' ? 'double' : current === 'double' ? 'final' : null;
     updateColumn(index, { barlineAfter: next });
@@ -149,26 +156,27 @@ export default function TabGrid({
           </label>
           <button
             type="button"
-            onClick={() => updateColumn(activeColumnIndex, {
-              kind: activeColumn.kind === 'grace' ? 'regular' : 'grace',
-            })}
+            onClick={() => updateColumn(activeColumnIndex, toggleTabGrace(activeColumn))}
             className={`px-2 py-1 border rounded ${activeColumn.kind === 'grace' ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
           >
             Grace / passing note
           </button>
           <button
             type="button"
-            onClick={() => updateColumn(activeColumnIndex, {
-              rest: !activeColumn.rest,
-              notes: activeColumn.rest ? activeColumn.notes : [],
-            })}
-            className={`px-2 py-1 border rounded ${activeColumn.rest ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
+            onClick={() => {
+              if (activeColumn.notes.length && !window.confirm('Replace the notes in this event with an explicit rest?')) return;
+              updateColumn(activeColumnIndex, toggleTabRest(activeColumn));
+            }}
+            disabled={!!activeColumn.measureId && (activeColumn.kind === 'grace' || (!!activeColumn.rest && !!activeColumn.technique))}
+            title={activeColumn.measureId ? 'Generated rest → explicit rest; explicit rest → editable generated rest. Remove any technique first.' : 'Toggle rest'}
+            className={`px-2 py-1 border rounded disabled:opacity-50 ${activeColumn.rest ? 'bg-amber-200 border-amber-500' : 'bg-white border-stone-300'}`}
           >
-            Rest
+            {activeColumn.measureId ? activeColumn.autoRest ? 'Make explicit rest' : activeColumn.rest ? 'Make editable rest' : 'Rest' : 'Rest'}
           </button>
           <label className="space-y-1">
             <span className="block text-stone-500 uppercase">Bar after</span>
             <select
+              disabled={!!activeColumn.measureId && columns[activeColumnIndex+1]?.measureId === activeColumn.measureId}
               value={activeColumn.barlineAfter ?? ''}
               onChange={(e) => updateColumn(activeColumnIndex, { barlineAfter: (e.target.value || null) as TabBarline | null })}
               className="bg-white border border-stone-300 rounded px-2 py-1"
@@ -184,10 +192,10 @@ export default function TabGrid({
         </div>
       )}
 
-      <div className="overflow-x-auto p-4">
-        <div className="flex">
+      <div className="overflow-x-auto p-4" role="region" aria-label="Scrollable tablature" tabIndex={0}>
+        <div className="flex w-max min-w-full pr-2">
           <div className="w-24 flex-shrink-0 border-r-2 border-stone-800 pr-2">
-            <div className="h-6" />
+            <div className="h-10" />
             <div className="space-y-4 py-2">
               {rows.map((row) => (
                 <div key={row.index} className="h-7 flex items-center justify-between font-mono text-xs" data-row-string-index={row.index}>
@@ -202,9 +210,12 @@ export default function TabGrid({
           <div className="flex divide-x divide-stone-200">
             {columns.map((col, colIdx) => {
               const isActive = colIdx === activeColumnIndex;
+              const start = !!col.measureId && columns[colIdx-1]?.measureId !== col.measureId;
+              const offset = columns.slice(0,colIdx).filter(e => e.measureId === col.measureId).reduce((sum,e) => sum+ticks(e),0);
+              const compoundGroup = col.meter === '6/8' && offset === 72;
               const header = [
                 col.kind === 'grace' ? 'grace' : null,
-                col.duration,
+                durationLabel(col.duration),
                 col.technique,
                 col.rest ? 'rest' : null,
               ].filter(Boolean).join(' ') || String(colIdx + 1);
@@ -212,21 +223,26 @@ export default function TabGrid({
               return (
                 <div
                   key={col.id || colIdx}
+                  data-tab-event={colIdx + 1}
+                  data-barline={col.barlineAfter || undefined}
+                  data-measure-start={start || undefined}
+                  data-compound-group={compoundGroup || undefined}
+                  style={{ ...(compoundGroup ? { borderLeft: '3px dashed #a8a29e', marginLeft: 8 } : {}), ...(col.barlineAfter ? { borderRight: col.barlineAfter === 'single' ? '2px solid #292524' : col.barlineAfter === 'double' ? '5px double #292524' : '7px double #0c0a09' } : {}) }}
                   onClick={() => onSelectColumn?.(colIdx)}
-                  className={`${col.kind === 'grace' ? 'w-9' : 'w-14'} relative group/column flex-shrink-0 flex flex-col items-center ${barlineClass(col.barlineAfter)} ${readOnly ? '' : 'cursor-pointer'} transition-colors ${
+                  className={`${col.kind === 'grace' ? 'w-24' : 'w-28'} relative group/column flex-shrink-0 flex flex-col items-center ${barlineClass(col.barlineAfter)} ${readOnly ? '' : 'cursor-pointer'} transition-colors ${
                     isActive ? 'bg-amber-100/50 ring-1 ring-amber-500' : readOnly ? '' : 'hover:bg-stone-100/60'
                   }`}
                 >
-                  <div className="h-6 w-full flex items-center justify-center font-mono text-[10px] text-stone-500 border-b border-stone-200 truncate px-0.5" title={header}>
+                  <div className="min-h-10 w-full flex items-center justify-center font-mono text-[10px] text-stone-500 border-b border-stone-200 text-center leading-tight px-0.5" title={header}>
                     <span>{header}</span>
                   </div>
-                  {!readOnly && (
+                  {!readOnly && (!col.measureId || columns[colIdx+1]?.measureId !== col.measureId) && (
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); cycleBarline(colIdx); }}
                       title="Cycle barline after this event"
                       aria-label={`Barline after event ${colIdx + 1}`}
-                      className="absolute -right-1.5 top-0 z-20 h-6 w-3 opacity-0 group-hover/column:opacity-100 focus:opacity-100 bg-stone-700 text-white text-[8px] rounded"
+                      className="absolute -right-1.5 top-0 z-20 h-6 w-3 opacity-100 bg-stone-700 text-white text-[8px] rounded"
                     >
                       |
                     </button>
@@ -259,7 +275,7 @@ export default function TabGrid({
                               onChange={(e) => handleCellChange(colIdx, strIdx, e.target.value)}
                               onFocus={() => onSelectColumn?.(colIdx)}
                               placeholder={col.rest ? '' : '—'}
-                              disabled={!!col.rest}
+                              disabled={!!col.rest && !col.autoRest}
                               className={`w-8 h-6 text-center font-mono font-bold rounded z-10 transition-colors ${col.kind === 'grace' ? 'text-[9px]' : 'text-xs'} ${
                                 val !== ''
                                   ? 'bg-stone-900 text-stone-50 border border-stone-900'

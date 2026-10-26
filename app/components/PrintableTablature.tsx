@@ -1,4 +1,5 @@
 import React from 'react';
+import { displayColumns, durationLabel, adaptTabData, measureStatus, ticks } from '@/app/lib/music/measures';
 import { getStandardTabRows } from '@/app/lib/music/string-order';
 import type { TabColumn, TabBarline } from './TabGrid';
 
@@ -57,16 +58,25 @@ export default function PrintableTablature({
   columns,
   columnsPerSystem = 12,
 }: PrintableTablatureProps) {
+  const model = adaptTabData(columns);
+  columns = displayColumns(columns);
   const rows = getStandardTabRows(stringCount, pitches);
-  const systems = groups(columns, columnsPerSystem);
+  const systems = model.mode === 'free' ? groups(columns, columnsPerSystem) : model.measures.reduce<TabColumn[][]>((result, measure) => {
+    const events = columns.filter(e => e.measureId === measure.id);
+    const last = result[result.length-1];
+    if (last && last.length+events.length <= columnsPerSystem) last.push(...events);
+    else result.push(...groups(events, columnsPerSystem));
+    return result;
+  }, []);
 
   return (
     <div className="space-y-5 print:space-y-4">
+      {model.mode === 'measured' && <p className="text-xs">{model.measures.map((m,i) => `Measure ${i+1} · ${m.meter} · ${measureStatus(m)}`).join(" | ")}</p>}
       {systems.map((system, systemIndex) => (
         <div key={systemIndex} className="break-inside-avoid">
           <div className="flex border border-stone-400 bg-white">
             <div className="w-20 shrink-0 border-r-2 border-stone-800">
-              <div className="h-6 px-1 flex items-center font-mono text-[8px] text-stone-500 border-b border-stone-300">
+              <div className="h-10 px-1 flex items-center font-mono text-[8px] text-stone-500 border-b border-stone-300">
                 {systemIndex === 0 ? 'EVENT' : 'CONT.'}
               </div>
               {rows.map((row) => (
@@ -80,10 +90,12 @@ export default function PrintableTablature({
 
             <div className="flex-1 flex min-w-0">
               {system.map((column, columnIndex) => {
-                const absoluteIndex = systemIndex * columnsPerSystem + columnIndex;
+                const absoluteIndex = columns.findIndex(e => e.id === column.id);
+                const offset = columns.slice(0,absoluteIndex).filter(e => e.measureId === column.measureId).reduce((sum,e) => sum+ticks(e),0);
+                const compoundGroup = column.meter === '6/8' && offset === 72;
                 const caption = [
                   column.kind === 'grace' ? 'grace →' : null,
-                  column.duration,
+                  durationLabel(column.duration),
                   column.technique,
                   column.rest ? 'rest' : null,
                 ].filter(Boolean).join(' ') || String(absoluteIndex + 1);
@@ -91,10 +103,10 @@ export default function PrintableTablature({
                 return (
                   <div
                     key={column.id || absoluteIndex}
-                    className={column.kind === 'grace' ? 'flex-[0.55] min-w-0' : 'flex-1 min-w-0'}
-                    style={boundaryStyle(column.barlineAfter)}
+                    className="flex-1 min-w-0"
+                    style={{...boundaryStyle(column.barlineAfter), ...(compoundGroup ? {borderLeft:'2px dashed #a8a29e'} : {})}}
                   >
-                    <div className="h-6 px-0.5 flex items-center justify-center font-mono text-[8px] text-stone-600 border-b border-stone-300 truncate">
+                    <div className="h-10 px-0.5 flex items-center justify-center font-mono text-[8px] text-stone-600 border-b border-stone-300 text-center leading-tight whitespace-normal">
                       {caption}
                     </div>
                     {rows.map((row) => {
@@ -120,7 +132,7 @@ export default function PrintableTablature({
               })}
               {Array.from({ length: Math.max(0, columnsPerSystem - system.length) }).map((_, emptyIndex) => (
                 <div key={`empty-${emptyIndex}`} className="flex-1 min-w-0 border-r border-stone-200">
-                  <div className="h-6 border-b border-stone-300" />
+                  <div className="h-10 border-b border-stone-300" />
                   {rows.map((row) => (
                     <div key={row.index} className="h-7 relative border-b border-stone-200 last:border-b-0">
                       <div className="absolute inset-x-0 top-1/2 h-px bg-stone-300" />

@@ -1,0 +1,128 @@
+import type { TabColumn, TabDuration } from '@/app/components/TabGrid';
+
+// Version 2 is an additive event envelope: legacy arrays are never rewritten on read.
+export interface Measure { id: string; meter: string; events: TabColumn[] }
+export const durationTicks: Record<TabDuration, number> = { '1': 192, '1/2': 96, '1/4': 48, '1/8': 24, '1/16': 12, 'dotted 1/4': 72, 'triplet 1/8': 16 };
+export function capacity(meter: string): number {
+  if (!/^(?:[1-9]|1[0-6])\/(?:2|4|8|16)$/.test(meter)) throw new Error('Choose a supported time signature first.');
+  const [n, d] = meter.split('/').map(Number); return n * 192 / d;
+}
+export function ticks(event: TabColumn): number { return event.kind === 'grace' ? 0 : durationTicks[event.duration as TabDuration] ?? 0; }
+export function adaptTabData(events: TabColumn[]): { version: 1; mode: 'free'; events: TabColumn[] } | { version: 2; mode: 'measured'; measures: Measure[] } {
+  if (!events.length || !events.every(e => e.rhythmVersion === 2 && e.measureId && e.meter)) return { version: 1, mode: 'free', events };
+  const measures: Measure[] = [];
+  for (const event of events) {
+    let measure = measures[measures.length - 1];
+    if (!measure || measure.id !== event.measureId) { measure = { id: event.measureId!, meter: event.meter!, events: [] }; measures.push(measure); }
+    measure.events.push(event);
+  }
+  return { version: 2, mode: 'measured', measures };
+}
+const uid = () => globalThis.crypto.randomUUID();
+function rests(total: number, template: TabColumn): TabColumn[] {
+  const result: TabColumn[] = [];
+  const choices = Object.entries(durationTicks).sort((a,b) => b[1]-a[1]) as [TabDuration,number][];
+  const reachable: ([TabDuration,number] | undefined)[] = Array(total+1);
+  for (let amount=1; amount<=total; amount++) reachable[amount] = choices.find(([,value]) => value <= amount && (value === amount || reachable[amount-value]));
+  if (total && !reachable[total]) throw new Error('This duration leaves an unrepresentable rest. Choose another duration.');
+  while (total > 0) {
+    const choice = reachable[total]!;
+    result.push({ id: uid(), notes: [], duration: choice[0], rest: true, autoRest: true, rhythmVersion: 2, measureId: template.measureId, meter: template.meter }); total -= choice[1];
+  }
+  return result;
+}
+export function emptyMeasure(meter: string): TabColumn[] {
+  capacity(meter);
+  const [n,d] = meter.split('/').map(Number); const measureId = uid();
+  return Array.from({length:n}, () => ({ id: uid(), notes: [], duration: (d === 2 ? '1/2' : `1/${d}`) as TabDuration, rest: true, autoRest: true, rhythmVersion: 2 as const, measureId, meter }));
+}
+/** A single pristine denominator-slot measure can follow a meter change safely. */
+export function canRebuildEmptyMeasure(events: TabColumn[]): boolean {
+  const model = adaptTabData(events);
+  if (model.mode !== 'measured' || model.measures.length !== 1) return false;
+  const measure = model.measures[0];
+  const [numerator, denominator] = measure.meter.split('/').map(Number);
+  return events.length === numerator && events.every(e => e.autoRest === true && e.rest === true && !e.notes.length && !e.technique && e.kind !== 'grace' && ticks(e) === 192 / denominator && (!e.barlineAfter || e.barlineAfter === 'single'));
+}
+
+export function withTabNotes(event: TabColumn, notes: TabColumn['notes']): TabColumn {
+  if (!event.measureId) return { ...event, notes, rest: notes.length ? false : event.rest };
+  return { ...event, notes, rest: !notes.length && event.kind !== 'grace', autoRest: !notes.length && event.kind !== 'grace' && !event.technique };
+}
+
+export function toggleTabRest(event: TabColumn): TabColumn {
+  if (!event.measureId) return { ...event, rest: !event.rest, notes: event.rest ? event.notes : [] };
+  // A measured rest stays a rest; the control changes whether it is explicit/editable.
+  return { ...event, notes: [], rest: true, autoRest: event.rest === true && !event.autoRest && !event.technique };
+}
+
+export function toggleTabGrace(event: TabColumn): TabColumn {
+  const kind = event.kind === 'grace' ? 'regular' : 'grace';
+  // Free events keep their permissive rest/empty state and never acquire measure metadata.
+  if (event.rhythmVersion !== 2 || !event.measureId || !event.meter) return { ...event, kind };
+  const emptyRegular = kind === 'regular' && !event.notes.length;
+  return { ...event, kind, rest: emptyRegular, autoRest: emptyRegular && !event.technique };
+}
+
+export function quarterBeatLabel(amount: number): string {
+  const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+  const whole = Math.floor(amount / 48); const remainder = amount % 48;
+  const divisor = gcd(remainder, 48);
+  const fraction = remainder ? `${remainder / divisor}/${48 / divisor}` : '';
+  return `${whole ? `${whole}${fraction ? ' ' : ''}` : ''}${fraction} quarter-note ${amount <= 48 ? 'beat' : 'beats'}`;
+}
+export function measureStatus(measure: Measure): string {
+  if (measure.events.some(e => e.kind !== 'grace' && !e.duration)) return 'Unknown duration';
+  const delta = measure.events.reduce((sum,e) => sum+ticks(e),0)-capacity(measure.meter);
+  return delta === 0 ? 'Complete' : `${delta < 0 ? 'Underfill' : 'Overflow'} ${quarterBeatLabel(Math.abs(delta))}`;
+}
+export function displayColumns(events: TabColumn[]): TabColumn[] {
+  const model = adaptTabData(events); if (model.mode === 'free') return events;
+  return model.measures.flatMap(m => m.events.map((e,i) => ({ ...e, barlineAfter: i === m.events.length-1 ? (e.barlineAfter === 'double' || e.barlineAfter === 'final' ? e.barlineAfter : 'single') : null })));
+}
+export function editMeasured(events: TabColumn[], index: number, updated: TabColumn): TabColumn[] {
+  const old = events[index]; if (!old?.measureId) return events.map((e,i) => i === index ? updated : e);
+  if (updated.kind !== 'grace' && !updated.notes.length && !updated.rest) throw new Error('A measured event must contain notes or be a rest.');
+  if (updated.rest && updated.notes.length) throw new Error('A rest cannot also contain notes.');
+  if (!updated.duration && updated.kind !== 'grace') throw new Error('Measured events need a duration. Choose a duration or keep the current event.');
+  const next = { ...updated, autoRest: updated.autoRest && !updated.notes.length && updated.rest === true && !updated.technique && updated.kind !== 'grace' };
+  const delta = ticks(next)-ticks(old); const result = [...events];
+  // Only contiguous generated rests after the event may be consumed. Explicit events retain their onset.
+  let end = index+1; let available = 0;
+  while (end < events.length && events[end].measureId === old.measureId && events[end].autoRest && !events[end].notes.length && events[end].kind !== 'grace') { available += ticks(events[end]); end++; }
+  if (delta > available) throw new Error('Duration conflicts with an explicit event or measure boundary. Keep the current duration, shorten it, or add a new measure for the phrase.');
+  let measureStart = index;
+  while (measureStart > 0 && events[measureStart-1].measureId === old.measureId) measureStart--;
+  let measureEnd = index+1;
+  while (measureEnd < events.length && events[measureEnd].measureId === old.measureId) measureEnd++;
+  // The editor passes rendered columns: an ordinary boundary may be projected as
+  // single, or stale interior metadata hidden as null. Neither is an explicit edit.
+  const displayedBoundary = index === measureEnd-1
+    ? (old.barlineAfter === 'double' || old.barlineAfter === 'final' ? old.barlineAfter : 'single')
+    : null;
+  const requestedBoundary = updated.barlineAfter ?? null;
+  const boundaryChanged = Object.prototype.hasOwnProperty.call(updated, 'barlineAfter')
+    && requestedBoundary !== (old.barlineAfter ?? null) && requestedBoundary !== displayedBoundary;
+  const boundary = boundaryChanged ? requestedBoundary : events[measureEnd-1].barlineAfter;
+  const fill = delta <= 0 ? [...rests(-delta,old), ...events.slice(index+1,end)] : rests(available-delta,old);
+  result.splice(index,end-index,next,...fill);
+  const finalIndex = measureEnd + (1+fill.length) - (end-index) - 1;
+  // Persist a measure boundary exactly once, at the resulting final event. Also
+  // clean up duplicate interior metadata left by earlier duration edits.
+  for (let i = measureStart; i <= finalIndex; i++) {
+    if (i === finalIndex) {
+      if (boundary !== undefined || result[i].barlineAfter != null) result[i] = { ...result[i], barlineAfter: boundary ?? null };
+    } else if (result[i].barlineAfter != null) result[i] = { ...result[i], barlineAfter: null };
+  }
+  return result;
+}
+export function durationLabel(duration: TabColumn['duration']): string {
+  const labels: Record<string,string> = { '1':'𝅝 whole', '1/2':'𝅗𝅥 half', '1/4':'♩ quarter', '1/8':'♪ eighth', '1/16':'♬ sixteenth', 'dotted 1/4':'♩· dotted quarter', 'triplet 1/8':'♪₃ triplet eighth' };
+  return duration ? labels[duration] ?? duration : 'Free';
+}
+export function meterLabel(events: TabColumn[], fallback?: string | null): string {
+  const model=adaptTabData(events);
+  if (model.mode==='free') return fallback && fallback !== 'free' ? fallback : 'Free';
+  const meters=Array.from(new Set(model.measures.map(m=>m.meter)));
+  return meters.length===1 ? meters[0] : `Mixed: ${meters.join(', ')}`;
+}

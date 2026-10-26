@@ -1,3 +1,4 @@
+import { toggleTabGrace } from '../music/measures';
 import { describe, expect, it } from 'vitest';
 import {
   clearDraft,
@@ -171,4 +172,13 @@ describe('resolveDraftRestore', () => {
   it('returns null when there are no instruments at all', () => {
     expect(resolveDraftRestore(draft(), [], tunings)).toBeNull();
   });
+});
+
+it('autosaves and restores a free empty event after toggling grace on and off', () => {
+  const storage=memoryStorage();
+  const event=toggleTabGrace(toggleTabGrace({id:'free-empty',notes:[]}));
+  const input=draft({timeSignature:'free',tabColumns:[event]});
+  expect(saveDraft(storage,input)).toBe(true);
+  expect(loadDraft(storage)).toEqual(input);
+  expect(loadDraft(storage)?.tabColumns[0]).not.toHaveProperty('autoRest');
 });

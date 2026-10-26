@@ -6,6 +6,7 @@ import NewTuning from '@/app/components/NewTuning';
 import MotifPlacement from '@/app/components/MotifPlacement';
 import { tempoTap } from '@/app/lib/music/tap-tempo';
 import FretboardEditor, { FretboardMode, FretboardNote } from '@/app/components/FretboardEditor';
+import { adaptTabData, emptyMeasure, editMeasured, measureStatus, canRebuildEmptyMeasure, displayColumns, withTabNotes } from '@/app/lib/music/measures';
 import TabGrid, { TabColumn } from '@/app/components/TabGrid';
 import AudioRecorder, { CapturedMedia } from '@/app/components/AudioRecorder';
 import { Check, AlertCircle, Save, Guitar, Radio, RotateCcw, Trash2 } from 'lucide-react';
@@ -76,7 +77,7 @@ export default function QuickCapturePage() {
   const [motifTags, setMotifTags] = useState<string>('');
   const [motifNotes, setMotifNotes] = useState<string>('');
   const [tempo, setTempo] = useState<number | ''>('');
-  const [timeSignature, setTimeSignature] = useState<string>('free');
+  const [timeSignature, setTimeSignature] = useState<string>('4/4');
 
   // Composition destination can be selected before saving.
   const [compositionMode, setCompositionMode] = useState<CompositionMode>('inbox');
@@ -86,6 +87,8 @@ export default function QuickCapturePage() {
 
   // TAB event entry and an independent, multi-position fretboard map.
   const [tabColumns, setTabColumns] = useState<TabColumn[]>(EMPTY_COLUMNS);
+  const [rhythmConflict, setRhythmConflict] = useState('');
+  const measuredModel = adaptTabData(tabColumns);
   const [activeColumnIndex, setActiveColumnIndex] = useState<number>(0);
   const [fretboardMode, setFretboardMode] = useState<FretboardMode>('map');
   const [fretboardMap, setFretboardMap] = useState<FretboardNote[]>([]);
@@ -143,6 +146,8 @@ export default function QuickCapturePage() {
 
         // Restore an unsaved draft, mapped onto instruments/tunings that exist now.
         const draft = loadDraft(browserStorage());
+        // Generate IDs only after hydration, and only when no legacy draft exists.
+        if (!draft) { setTabColumns(emptyMeasure('4/4')); setTimeSignature('4/4'); }
         setSaveUncertain(draft?.saveUncertain || false);
         setCaptureId(draft?.captureId || crypto.randomUUID());
         setMapExtent(draft?.mapExtent || 24);
@@ -204,7 +209,7 @@ export default function QuickCapturePage() {
         `Switching to a ${nextInst.stringCount}-string instrument clears the TAB and fretboard map entered for ${stringCount} strings. Continue?`
       );
       if (!ok) return;
-      setTabColumns(tabColumns.map(c => ({ ...c, notes: [] })));
+      setTabColumns(tabColumns.map(c => withTabNotes(c, [])));
       setFretboardMap([]);
     }
     setSelectedInstrumentId(instrumentId);
@@ -336,8 +341,38 @@ export default function QuickCapturePage() {
     }
 
     const updatedCols = [...tabColumns];
-    updatedCols[activeColumnIndex] = { ...activeCol, notes: newNotes, rest: newNotes.length > 0 ? false : activeCol.rest };
+    updatedCols[activeColumnIndex] = withTabNotes(activeCol, newNotes);
     setTabColumns(updatedCols);
+  };
+
+  const handleMeterChange = (meter: string) => {
+    setTimeSignature(meter);
+    if (measuredModel.mode === 'measured' && canRebuildEmptyMeasure(tabColumns)) {
+      setTabColumns(emptyMeasure(meter)); setActiveColumnIndex(0);
+    }
+    setRhythmConflict('');
+  };
+
+  const handleRhythmModeChange = (mode: string) => {
+    if (mode === measuredModel.mode) return;
+    if (mode === 'free') {
+      if (canRebuildEmptyMeasure(tabColumns)) setTabColumns(EMPTY_COLUMNS());
+      else {
+        if (!window.confirm('Switch to Free Rhythm? Notes, rests, durations and visible boundaries are kept, but measures will no longer enforce capacity.')) return;
+        setTabColumns(displayColumns(tabColumns).map(event => {
+          const { rhythmVersion, measureId, meter, autoRest, ...freeEvent } = event;
+          return freeEvent;
+        }));
+      }
+      setTimeSignature('free');
+    } else {
+      if (tabColumns.some(c => c.notes.length || c.duration || c.rest || c.technique || c.barlineAfter || c.kind === 'grace')) {
+        setRhythmConflict('Existing free-rhythm events are preserved. Start a separate capture to use measured rhythm.'); return;
+      }
+      const meter = timeSignature === 'free' ? '4/4' : timeSignature;
+      setTabColumns(emptyMeasure(meter)); setTimeSignature(meter);
+    }
+    setActiveColumnIndex(0); setRhythmConflict('');
   };
 
   const handleMapNoteClick = (stringIndex: number, fret: number) => {
@@ -474,7 +509,9 @@ export default function QuickCapturePage() {
     setMotifName('');
     setMotifNotes('');
     setMotifTags('');
-    setTabColumns(EMPTY_COLUMNS());
+    setTabColumns(emptyMeasure('4/4'));
+    setTimeSignature('4/4');
+    setRhythmConflict('');
     setActiveColumnIndex(0);
     setFretboardMap([]);
   };
@@ -763,13 +800,13 @@ export default function QuickCapturePage() {
           <div className="font-bold tracking-wider text-stone-900 uppercase">4. RHYTHM & TEMPO</div>
           <div className="grid grid-cols-2 gap-2">
             <label className="space-y-1">
-              <span className="block text-[11px] text-stone-600">TIME SIGNATURE</span>
+              <span className="block text-[11px] text-stone-600">{measuredModel.mode === 'measured' && !canRebuildEmptyMeasure(tabColumns) ? 'TIME SIGNATURE · METER FOR NEXT MEASURE' : 'TIME SIGNATURE'}</span>
               <select
                 value={timeSignature}
-                onChange={(e) => setTimeSignature(e.target.value)}
+                onChange={(e) => handleMeterChange(e.target.value)}
                 className="w-full bg-white border border-stone-300 rounded px-2.5 py-1.5"
               >
-                <option value="free">Free rhythm</option>
+                {measuredModel.mode === 'free' && <option value="free">Unspecified (free rhythm)</option>}
                 <option value="2/4">2/4</option>
                 <option value="3/4">3/4</option>
                 <option value="4/4">4/4</option>
@@ -894,6 +931,27 @@ export default function QuickCapturePage() {
 
       {/* TAB event editor and independent fretboard map */}
       <div className="space-y-4">
+        <div className="p-3 border border-stone-300 space-y-2 font-mono text-xs">
+          <label className="flex flex-wrap items-center gap-2">Rhythm mode
+            <select aria-label="Rhythm mode" value={measuredModel.mode} onChange={e => handleRhythmModeChange(e.target.value)} className="p-2 border border-stone-400 rounded bg-white">
+              <option value="measured">Measured</option><option value="free">Free Rhythm</option>
+            </select>
+          </label>
+          {measuredModel.mode === 'measured' && !canRebuildEmptyMeasure(tabColumns) && <p>Meter selection applies to the next added measure. Existing measures keep their meter and timing.</p>}
+          {measuredModel.mode === 'free' && <p>Free rhythm · legacy events preserved.</p>}
+          {rhythmConflict && <p role="alert" className="text-red-800">{rhythmConflict} <button type="button" onClick={() => setRhythmConflict('')}>Keep current events</button></p>}
+          {measuredModel.mode === 'free' ? <button type="button" onClick={() => handleRhythmModeChange('measured')} className="px-3 py-2 border border-stone-400 rounded bg-white">Start measured rhythm</button> : <>
+            <button type="button" onClick={() => { try { setTabColumns([...tabColumns, ...emptyMeasure(timeSignature)]); setRhythmConflict(''); } catch(error) { setRhythmConflict((error as Error).message); } }} className="px-3 py-2 border border-stone-400 rounded bg-white">Add measure</button>
+            {measuredModel.measures.map((m,i) => <div key={m.id} data-measure-id={m.id} className="flex flex-wrap items-center justify-between gap-3 border-t border-stone-200 pt-2">
+              Measure {i+1} · {m.meter}{m.meter === '6/8' ? ' · grouped 3+3' : ''} · {measureStatus(m)}
+              <button type="button" onClick={() => {
+                if (m.events.some(e => !e.autoRest) && !window.confirm('Delete this measure and its explicitly entered events?')) return;
+                const next = tabColumns.filter(e => e.measureId !== m.id); setTabColumns(next.length ? next : emptyMeasure(m.meter)); setActiveColumnIndex(0);
+              }} className="px-2 py-1 border border-stone-300 rounded text-red-800 bg-white">Delete measure {i+1}</button>
+            </div>)}
+          </>}
+        </div>
+        <p className="text-xs text-stone-600">Scroll the TAB horizontally to reach every beat. Tap an event to edit its length, rest state or technique above the staff.</p>
         {/* Tab Grid */}
         <TabGrid
           stringCount={stringCount}
@@ -902,16 +960,21 @@ export default function QuickCapturePage() {
           activeColumnIndex={activeColumnIndex}
           onSelectColumn={setActiveColumnIndex}
           onUpdateColumn={(idx, col) => {
-            const next = [...tabColumns];
-            next[idx] = col;
-            setTabColumns(next);
+            try { setTabColumns(editMeasured(tabColumns, idx, col)); setRhythmConflict(''); } catch(error) { setRhythmConflict((error as Error).message); }
           }}
-          onAddColumn={() => {
+          onAddColumn={measuredModel.mode === 'measured' ? undefined : () => {
             const next = [...tabColumns, { id: `c-${Date.now()}`, notes: [] }];
             setTabColumns(next);
             setActiveColumnIndex(next.length - 1);
           }}
           onDeleteColumn={(idx) => {
+            if (measuredModel.mode === 'measured') {
+              const old = tabColumns[idx];
+              if (!old.autoRest && !window.confirm('Replace this explicitly entered event with a generated rest?')) return;
+              if (old.kind === 'grace') setTabColumns(tabColumns.filter((_,i) => i !== idx));
+              else setTabColumns(tabColumns.map((e,i) => i === idx ? { ...e, notes: [], technique: null, rest: true, autoRest: true } : e));
+              return;
+            }
             if (tabColumns.length <= 1) return;
             const next = tabColumns.filter((_, i) => i !== idx);
             setTabColumns(next);

@@ -189,6 +189,10 @@ export const TAB_BARLINES = ['single', 'double', 'final'] as const;
 export const TAB_COLUMN_KINDS = ['regular', 'grace'] as const;
 
 export const tabColumnSchema = z.object({
+  rhythmVersion: z.literal(2).optional(),
+  measureId: z.string().min(1).max(100).optional(),
+  meter: z.string().regex(/^(?:[1-9]|1[0-6])\/(?:2|4|8|16)$/).optional(),
+  autoRest: z.boolean().optional(),
   id: z.string().min(1).max(100),
   notes: z.array(tabNoteSchema).max(MAX_STRINGS),
   /** null/absent = free rhythm. */
@@ -204,7 +208,23 @@ export const tabColumnSchema = z.object({
 });
 export type ValidTabColumn = z.infer<typeof tabColumnSchema>;
 
-export const tabDataSchema = z.array(tabColumnSchema).max(2000);
+export const tabDataSchema = z.array(tabColumnSchema).max(2000).superRefine((events, ctx) => {
+  if (!events.some(e => e.rhythmVersion === 2 || e.measureId || e.meter || e.autoRest)) return;
+  const seen = new Set<string>(); let previous = ''; let meter = '';
+  for (const [index,event] of Array.from(events.entries())) {
+    const invalid = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index], message });
+    if (event.rhythmVersion !== 2 || !event.measureId || !event.meter) { invalid('Measured events require version, measure and meter.'); continue; }
+    if (event.measureId !== previous) {
+      if (seen.has(event.measureId)) invalid('A measure must be contiguous.');
+      seen.add(event.measureId); previous = event.measureId; meter = event.meter;
+    }
+    if (event.meter !== meter) invalid('Events in a measure must share its meter.');
+    if (event.autoRest && (!event.rest || event.notes.length || event.kind === 'grace' || event.technique)) invalid('Generated rests cannot contain explicit musical content.');
+    if (event.kind !== 'grace' && !event.notes.length && !event.rest) invalid('Measured events must contain notes or be rests.');
+    if (event.rest && event.notes.length) invalid('A rest cannot also contain notes.');
+    if (event.kind !== 'grace' && !event.duration) invalid('Measured events need a duration.');
+  }
+});
 
 export const timeSignatureSchema = z.union([
   z.literal('free'),
